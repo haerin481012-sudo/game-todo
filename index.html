@@ -11,10 +11,9 @@
 <body>
   <header class="app-header">
     <h1 class="app-title">Quest To-do</h1>
-    <button type="button" id="header-pet" class="header-pet" aria-label="펫 보기">
-      <span id="header-pet-icon" aria-hidden="true"></span>
-      <span id="header-pet-name" class="header-pet-name"></span>
-      <span id="header-pet-mood" aria-hidden="true"></span>
+    <button type="button" id="header-pet" class="header-pet" aria-label="내 펫 보기">
+      <span id="header-pet-icon" class="header-pet-icon" aria-hidden="true"></span>
+      <span id="header-streak" class="header-streak"></span>
     </button>
   </header>
 
@@ -22,10 +21,13 @@
     <button type="button" class="tab is-active" role="tab" id="tab-todos"
             aria-controls="panel-todos" aria-selected="true" data-tab="todos">할 일</button>
     <button type="button" class="tab" role="tab" id="tab-pet"
-            aria-controls="panel-pet" aria-selected="false" tabindex="-1" data-tab="pet">펫</button>
+            aria-controls="panel-pet" aria-selected="false" tabindex="-1" data-tab="pet">내 펫</button>
+    <button type="button" class="tab" role="tab" id="tab-calendar"
+            aria-controls="panel-calendar" aria-selected="false" tabindex="-1" data-tab="calendar">달력</button>
   </nav>
 
   <main class="panels">
+    <!-- 할 일 -->
     <section class="panel" role="tabpanel" id="panel-todos" aria-labelledby="tab-todos">
       <div class="date-bar">
         <button type="button" id="date-prev" class="btn btn-icon" aria-label="이전 날짜">◀</button>
@@ -33,7 +35,6 @@
         <button type="button" id="date-next" class="btn btn-icon" aria-label="다음 날짜">▶</button>
         <button type="button" id="date-today" class="btn btn-small">오늘</button>
       </div>
-      <p id="date-note" class="date-note" hidden>지난 날짜는 올클리어해도 펫이 자라지 않아요</p>
 
       <div class="progress-area">
         <div class="progress-info">
@@ -44,6 +45,7 @@
              aria-label="완료율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div id="progress-fill" class="progress-fill"></div>
         </div>
+        <p id="growth-hint" class="growth-hint"></p>
       </div>
 
       <form id="todo-form" class="todo-form" autocomplete="off" novalidate>
@@ -69,6 +71,7 @@
       <p id="todo-empty" class="empty-message" hidden>오늘 할 일을 추가해 보세요</p>
     </section>
 
+    <!-- 내 펫 -->
     <section class="panel" role="tabpanel" id="panel-pet" aria-labelledby="tab-pet" hidden>
       <div class="pet-card">
         <div id="pet-icon" class="pet-icon" aria-hidden="true"></div>
@@ -85,24 +88,46 @@
         <p id="pet-next" class="pet-next"></p>
       </div>
 
-      <div class="streak-card">
-        <div class="streak-stats">
-          <div class="streak-stat">
-            <span class="streak-label">🔥 현재 연속</span>
-            <span><strong id="streak-current" class="streak-value">0</strong>일</span>
-          </div>
-          <div class="streak-stat">
-            <span class="streak-label">🏅 최고 기록</span>
-            <span><strong id="streak-best" class="streak-value">0</strong>일</span>
-          </div>
-        </div>
-        <p id="streak-note" class="streak-note"></p>
+      <div class="section-card">
+        <h2 class="section-title">받은 배지 <span id="badge-count" class="section-count"></span></h2>
         <ul id="badge-list" class="badge-list" aria-label="배지"></ul>
       </div>
       <p class="panel-note">
         오늘 할 일을 3개 이상 모두 끝내면(올클리어) 펫이 하루에 한 번 자라요.
         지난 날짜는 올클리어해도 자라지 않아요.
       </p>
+    </section>
+
+    <!-- 달력 -->
+    <section class="panel" role="tabpanel" id="panel-calendar" aria-labelledby="tab-calendar" hidden>
+      <div class="streak-stats">
+        <div class="streak-stat">
+          <span class="streak-label">🔥 현재 연속</span>
+          <span><strong id="streak-current" class="streak-value">0</strong>일</span>
+        </div>
+        <div class="streak-stat">
+          <span class="streak-label">🏅 최고 기록</span>
+          <span><strong id="streak-best" class="streak-value">0</strong>일</span>
+        </div>
+      </div>
+      <p id="streak-note" class="streak-note"></p>
+
+      <div class="calendar-bar">
+        <button type="button" id="cal-prev" class="btn btn-icon" aria-label="이전 달">◀</button>
+        <strong id="cal-label" class="cal-label" aria-live="polite"></strong>
+        <button type="button" id="cal-next" class="btn btn-icon" aria-label="다음 달">▶</button>
+      </div>
+      <div class="calendar" role="grid" aria-labelledby="cal-label">
+        <div class="calendar-weekdays" role="row">
+          <span role="columnheader" class="is-sun">일</span><span role="columnheader">월</span>
+          <span role="columnheader">화</span><span role="columnheader">수</span>
+          <span role="columnheader">목</span><span role="columnheader">금</span>
+          <span role="columnheader" class="is-sat">토</span>
+        </div>
+        <div id="calendar-grid" class="calendar-grid"></div>
+      </div>
+      <p id="cal-summary" class="cal-summary"></p>
+      <p class="panel-note">✅ 올클리어한 날이에요. 날짜를 누르면 그날의 할 일로 이동해요.</p>
     </section>
   </main>
 
@@ -118,6 +143,19 @@
         <button type="button" id="pet-name-cancel" class="btn">취소</button>
         <button type="submit" class="btn btn-primary">확인</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="evolve-dialog" class="dialog evolve-dialog" aria-labelledby="evolve-title">
+    <p class="evolve-icons" aria-hidden="true">
+      <span id="evolve-from" class="evolve-from"></span>
+      <span class="evolve-arrow">➜</span>
+      <span id="evolve-to" class="evolve-to"></span>
+    </p>
+    <h2 id="evolve-title" class="dialog-title"></h2>
+    <p id="evolve-note" class="dialog-note"></p>
+    <form method="dialog">
+      <button type="submit" class="btn btn-primary evolve-ok">좋아요!</button>
     </form>
   </dialog>
 

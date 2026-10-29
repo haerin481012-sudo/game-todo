@@ -209,13 +209,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.date-note {
-  margin: -6px 0 12px;
-  font-size: 0.8rem;
-  text-align: center;
-  color: var(--muted);
-}
-
 /* ===== 진행 막대 ===== */
 .progress-area {
   margin-bottom: 16px;
@@ -256,6 +249,18 @@ body {
 
 .progress-fill.is-clear {
   background: var(--gold);
+}
+
+.growth-hint {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.growth-hint.is-muted {
+  font-weight: 400;
+  color: var(--muted);
 }
 
 /* ===== 입력 줄 ===== */
@@ -452,10 +457,14 @@ body {
   outline-offset: 2px;
 }
 
-.header-pet-name {
-  overflow: hidden;
+.header-pet-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.header-streak {
   font-weight: 600;
-  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -515,11 +524,22 @@ body {
 }
 
 /* ===== 연속 달성 · 배지 ===== */
-.streak-card {
+.section-card {
   margin-bottom: 16px;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.section-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.section-count {
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .streak-stats {
@@ -548,7 +568,111 @@ body {
 }
 
 .streak-note {
-  margin: 12px 0;
+  margin: 12px 0 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+/* ===== 달력 ===== */
+.calendar-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cal-label {
+  min-width: 8em;
+  text-align: center;
+  font-size: 1.1rem;
+}
+
+.calendar-weekdays,
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.calendar-weekdays {
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.is-sun {
+  color: var(--danger);
+}
+
+.is-sat {
+  color: var(--cat-work-fg);
+}
+
+.cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 48px;
+  padding: 4px 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.cal-cell.is-blank {
+  background: none;
+  border: none;
+  cursor: default;
+}
+
+.cal-cell.is-sun .cal-day {
+  color: var(--danger);
+}
+
+.cal-cell.is-sat .cal-day {
+  color: var(--cat-work-fg);
+}
+
+.cal-cell.is-future {
+  color: var(--muted);
+  background: var(--surface-sunken);
+}
+
+.cal-cell.is-cleared {
+  background: var(--gold-soft);
+  border-color: var(--gold);
+}
+
+.cal-cell.is-today {
+  border: 2px solid var(--accent);
+  font-weight: 700;
+}
+
+.cal-cell:hover:not(.is-blank) {
+  background: var(--accent-soft);
+}
+
+.cal-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cal-stamp {
+  font-size: 1.05rem;
+  line-height: 1.2;
+}
+
+.cal-summary {
+  margin: 12px 0 0;
   text-align: center;
   font-weight: 600;
 }
@@ -595,6 +719,39 @@ body {
 .badge-card-condition {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+/* ===== 진화 팝업 ===== */
+.evolve-icons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 0 8px;
+}
+
+.evolve-from {
+  font-size: 2.4rem;
+  opacity: 0.5;
+}
+
+.evolve-arrow {
+  color: var(--muted);
+}
+
+.evolve-to {
+  font-size: 3.6rem;
+  animation: evolve-bounce 0.8s ease-out;
+}
+
+@keyframes evolve-bounce {
+  0% { transform: scale(0.3) rotate(-20deg); }
+  60% { transform: scale(1.25) rotate(8deg); }
+  100% { transform: none; }
+}
+
+.evolve-ok {
+  width: 100%;
 }
 
 /* ===== 이름 짓기 팝업 ===== */

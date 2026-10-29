@@ -13,7 +13,7 @@ const PET_STAGES = Object.freeze([
   { min: 3, name: "아기", icon: "🐣" },
   { min: 7, name: "어린이", icon: "🐥" },
   { min: 14, name: "어른", icon: "🐔" },
-  { min: 30, name: "전설", icon: "🐉" },
+  { min: 30, name: "전설", icon: "🦚" },
 ]);
 
 const PET_MOODS = Object.freeze({
@@ -71,6 +71,24 @@ const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 // "2026-10-29(목)"
 function formatDateLabel(dateString) {
   return `${dateString}(${WEEKDAYS[parseLocalDate(dateString).getDay()]})`;
+}
+
+// "2026-10" → "2026년 10월"
+function formatMonthLabel(monthString) {
+  const [y, m] = monthString.split("-").map(Number);
+  return `${y}년 ${m}월`;
+}
+
+// 받침 유무로 주격 조사 선택: "몽이" → "몽이가", "콩" → "콩이". 한글이 아니면 "이(가)".
+function withSubjectParticle(word) {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  if (code < 0 || code > 11171) return `${word}이(가)`;
+  return word + (code % 28 === 0 ? "가" : "이");
+}
+
+// 화면 문구용 펫 이름 + 조사. 이름이 없으면 "펫이".
+function petSubject() {
+  return withSubjectParticle(state.pet.name || "펫");
 }
 
 /* ===== 저장소 접근 ===== */
@@ -285,6 +303,8 @@ let selectedDate = getLocalDateString();
 let categoryFilter = "all";
 // 수정 중인 할 일 id (저장하지 않음). 한 번에 하나만 수정한다.
 let editingId = null;
+// 달력에서 보고 있는 달 "YYYY-MM" (저장하지 않음).
+let calendarMonth = getLocalDateString().slice(0, 7);
 
 /* ===== 할 일 ===== */
 function generateId() {
@@ -533,7 +553,22 @@ function getClearDateText(date) {
   return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
-// updateGrowth() 결과를 토스트·배너로 보여준다.
+// 진화 축하 팝업: 이전 단계 → 새 단계
+function showEvolveDialog(from, to) {
+  document.getElementById("evolve-from").textContent = from.icon;
+  document.getElementById("evolve-to").textContent = to.icon;
+  document.getElementById("evolve-title").textContent = `${to.name} 단계로 진화했어요!`;
+  document.getElementById("evolve-note").textContent = `${petSubject()} ${from.name} 단계에서 ${to.name} 단계로 자랐어요. 계속 올클리어해 주세요!`;
+  const dialog = document.getElementById("evolve-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+/*
+ * updateGrowth() 결과를 화면 효과로 보여준다.
+ * - 오늘 올클리어 → "[펫이름]이 자랐어요!" 배너
+ * - 단계가 오르면 → 진화 축하 팝업
+ * - 배지를 받으면 → 토스트
+ */
 function showGrowthFeedback(result) {
   if (!result) return;
   const { growthChange, stageUp, pastClear, newBadges = [] } = result;
@@ -542,18 +577,12 @@ function showGrowthFeedback(result) {
     showToast("지난 날짜는 올클리어해도 펫이 자라지 않아요", "info", 2500);
   }
   if (growthChange > 0) {
-    const stage = getPetStage(state.pet.growth);
-    const growthText = stageUp
-      ? `${stage.icon} ${state.pet.name || "펫"}, ${stage.name} 단계로 성장!`
-      : `오늘 올클리어! ${state.pet.name || "펫"} 성장 +1`;
-    if (newBadges.length > 0) {
-      // 배지가 더 드문 일이라 배너는 배지에, 성장은 토스트로
-      const badge = newBadges[newBadges.length - 1];
-      showBanner(`${badge.icon} 배지 획득! ${badge.name}`);
-      showToast(growthText, "gain", 2500);
-    } else {
-      showBanner(growthText);
+    showBanner(`${petSubject()} 자랐어요!`);
+    if (stageUp) {
+      const to = getPetStage(state.pet.growth);
+      showEvolveDialog(PET_STAGES[to.index - 1], to);
     }
+    newBadges.forEach((badge) => showToast(`${badge.icon} 배지 획득: ${badge.name}`, "gain", 3000));
   } else if (growthChange < 0) {
     showToast("오늘 올클리어가 풀려서 성장 -1", "loss");
   }
@@ -658,7 +687,23 @@ function renderDateBar() {
   const today = getLocalDateString();
   document.getElementById("date-label").textContent = formatDateLabel(selectedDate);
   document.getElementById("date-today").disabled = selectedDate === today;
-  document.getElementById("date-note").hidden = selectedDate >= today;
+}
+
+// 진행 막대 아래 펫 성장 안내.
+function getGrowthHint() {
+  const today = getLocalDateString();
+  const { total } = getProgress(selectedDate);
+  if (selectedDate < today) return "지난 날짜는 올클리어해도 펫이 자라지 않아요";
+  if (selectedDate > today) return "미래 날짜는 그날이 되면 체크할 수 있어요";
+  if (state.clearDates.includes(today)) return `오늘 ${petSubject()} 자랐어요 🎉`;
+  if (total < CONFIG.MIN_TODOS_FOR_CLEAR) return `할 일이 ${CONFIG.MIN_TODOS_FOR_CLEAR}개 이상 있어야 성장해요`;
+  return `올클리어하면 ${petSubject()} 자라요`;
+}
+
+function renderGrowthHint() {
+  const hint = document.getElementById("growth-hint");
+  hint.textContent = getGrowthHint();
+  hint.classList.toggle("is-muted", selectedDate !== getLocalDateString());
 }
 
 function renderFilter() {
@@ -706,6 +751,7 @@ function getEmptyText() {
 function renderTodos() {
   renderDateBar();
   renderProgress();
+  renderGrowthHint();
   renderFilter();
 
   const list = document.getElementById("todo-list");
@@ -736,10 +782,10 @@ function renderPet() {
   const mood = getPetMood();
   const name = pet.name || "이름 없는 펫";
 
-  // 헤더 요약
+  // 헤더 요약: 펫 이모지 + 현재 연속
+  const streak = getCurrentStreak(state.clearDates, getLocalDateString());
   document.getElementById("header-pet-icon").textContent = stage.icon;
-  document.getElementById("header-pet-name").textContent = name;
-  document.getElementById("header-pet-mood").textContent = mood.icon;
+  document.getElementById("header-streak").textContent = `🔥 ${streak}일 연속`;
   document.getElementById("header-pet").title = `${name} · ${stage.name} · ${mood.label}`;
 
   // 펫 탭
@@ -754,7 +800,7 @@ function renderPet() {
   let percent = 100;
   if (stage.next) {
     percent = Math.round(((pet.growth - stage.min) / (stage.next.min - stage.min)) * 100);
-    next.textContent = `${stage.next.icon} ${stage.next.name}까지 올클리어 ${stage.next.min - pet.growth}번 더`;
+    next.textContent = `${stage.next.icon} ${stage.next.name}까지 올클리어 ${stage.next.min - pet.growth}일 남았어요`;
   } else {
     next.textContent = "최고 단계예요!";
   }
@@ -791,20 +837,91 @@ function createBadgeItem(badge) {
   return li;
 }
 
-function renderStreak() {
+function renderBadges() {
+  const owned = STREAK_BADGES.filter((badge) => state.badges.includes(badge.id)).length;
+  document.getElementById("badge-count").textContent = `${owned} / ${STREAK_BADGES.length}`;
+  document.getElementById("badge-list").replaceChildren(...STREAK_BADGES.map(createBadgeItem));
+}
+
+/* ===== 달력 ===== */
+function createCalendarCell(date, today, cleared) {
+  if (date === null) {
+    const blank = document.createElement("span");
+    blank.className = "cal-cell is-blank";
+    blank.setAttribute("aria-hidden", "true");
+    return blank;
+  }
+  const weekday = parseLocalDate(date).getDay();
+  const isCleared = cleared.has(date);
+
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className = "cal-cell";
+  cell.dataset.date = date;
+  cell.classList.toggle("is-today", date === today);
+  cell.classList.toggle("is-cleared", isCleared);
+  cell.classList.toggle("is-future", date > today);
+  cell.classList.toggle("is-sun", weekday === 0);
+  cell.classList.toggle("is-sat", weekday === 6);
+  cell.setAttribute("aria-label", `${formatDateLabel(date)}${isCleared ? " 올클리어" : ""}${date === today ? " (오늘)" : ""}`);
+
+  const day = document.createElement("span");
+  day.className = "cal-day";
+  day.textContent = String(Number(date.slice(8)));
+
+  const stamp = document.createElement("span");
+  stamp.className = "cal-stamp";
+  stamp.setAttribute("aria-hidden", "true");
+  stamp.textContent = isCleared ? "✅" : "";
+
+  cell.append(day, stamp);
+  return cell;
+}
+
+function renderCalendar() {
   const today = getLocalDateString();
+  const thisMonth = today.slice(0, 7);
+  const cleared = new Set(state.clearDates);
+
+  document.getElementById("cal-label").textContent = formatMonthLabel(calendarMonth);
+  document.getElementById("cal-next").disabled = calendarMonth >= thisMonth; // 미래 달은 볼 것이 없다
+  document.getElementById("calendar-grid").replaceChildren(
+    ...getCalendarCells(calendarMonth).map((date) => createCalendarCell(date, today, cleared)),
+  );
+
+  const monthCount = state.clearDates.filter((date) => date.startsWith(`${calendarMonth}-`)).length;
+  document.getElementById("cal-summary").textContent = `${Number(calendarMonth.slice(5))}월 올클리어 ${monthCount}일`;
+
   const current = getCurrentStreak(state.clearDates, today);
   document.getElementById("streak-current").textContent = String(current);
   document.getElementById("streak-best").textContent = String(getBestStreak(state.clearDates));
   document.getElementById("streak-note").textContent = getStreakNote(current, today);
-  document.getElementById("badge-list").replaceChildren(...STREAK_BADGES.map(createBadgeItem));
+}
+
+function initCalendar() {
+  document.getElementById("cal-prev").addEventListener("click", () => {
+    calendarMonth = addMonths(calendarMonth, -1);
+    renderCalendar();
+  });
+  document.getElementById("cal-next").addEventListener("click", () => {
+    calendarMonth = addMonths(calendarMonth, 1);
+    renderCalendar();
+  });
+  // 날짜를 누르면 그날의 할 일로 이동
+  document.getElementById("calendar-grid").addEventListener("click", (e) => {
+    const cell = e.target.closest(".cal-cell[data-date]");
+    if (!cell) return;
+    selectDate(cell.dataset.date);
+    switchTab("todos");
+  });
 }
 
 // 화면 전체를 다시 그린다.
 function render() {
   renderTodos();
   renderPet();
-  renderStreak();
+  renderBadges();
+  renderCalendar();
 }
 
 function showTodoError(message) {
@@ -911,6 +1028,9 @@ function checkDayChange() {
 
   if (selectedDate === lastKnownToday) {
     selectedDate = today;
+  }
+  if (calendarMonth === lastKnownToday.slice(0, 7)) {
+    calendarMonth = today.slice(0, 7); // 이번 달을 보고 있었으면 달이 바뀔 때 따라간다
   }
   lastKnownToday = today;
   render(); // 날짜가 바뀌면 펫 기분도 바뀐다
@@ -1063,6 +1183,7 @@ function init() {
   initTodoForm();
   initTodoList();
   initPetName();
+  initCalendar();
   initDayWatcher();
   document.getElementById("celebration").addEventListener("click", hideBanner);
 

@@ -28,6 +28,26 @@ function addDays(dateString, days) {
   return getLocalDateString(date);
 }
 
+/* ===== 달력 ===== */
+// "YYYY-MM"에서 months달 이동한 "YYYY-MM".
+function addMonths(monthString, months) {
+  const [y, m] = monthString.split("-").map(Number);
+  const date = new Date(y, m - 1 + months, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// 월간 달력 칸 (일요일 시작). 첫 주 앞의 빈칸은 null, 이어서 그 달의 "YYYY-MM-DD".
+function getCalendarCells(monthString) {
+  const [y, m] = monthString.split("-").map(Number);
+  const leadingBlanks = new Date(y, m - 1, 1).getDay();
+  const daysInMonth = new Date(y, m, 0).getDate(); // 다음 달 0일 = 이번 달 마지막 날
+  const cells = Array(leadingBlanks).fill(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    cells.push(`${monthString}-${String(day).padStart(2, "0")}`);
+  }
+  return cells;
+}
+
 /* ===== 연속 달성 ===== */
 const STREAK_BADGES = Object.freeze([
   { id: "streak-3", days: 3, name: "불꽃 시작", icon: "🔥" },
