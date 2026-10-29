@@ -2,7 +2,24 @@
 
 /* ===== 설정 ===== */
 const CONFIG = Object.freeze({
-  MIN_TODOS_FOR_CLEAR: 3, // 올클리어로 인정하는 최소 할 일 수 (기록용 제외)
+  MIN_TODOS_FOR_CLEAR: 3, // 올클리어로 인정하는 최소 할 일 수
+  MAX_TODOS_PER_DAY: 20, // 하루에 추가할 수 있는 최대 할 일 수
+  PET_NAME_MAX_LENGTH: 12,
+});
+
+// 성장 단계. growth가 min 이상이면 그 단계. 아래에서 위로 오름차순.
+const PET_STAGES = Object.freeze([
+  { min: 0, name: "알", icon: "🥚" },
+  { min: 3, name: "아기", icon: "🐣" },
+  { min: 7, name: "어린이", icon: "🐥" },
+  { min: 14, name: "어른", icon: "🐔" },
+  { min: 30, name: "전설", icon: "🐉" },
+]);
+
+const PET_MOODS = Object.freeze({
+  happy: { label: "신남", icon: "😆", note: "오늘 올클리어했어요!" },
+  normal: { label: "보통", icon: "🙂", note: "오늘도 올클리어하면 신나요." },
+  sad: { label: "시무룩", icon: "😢", note: "올클리어를 기다리고 있어요." },
 });
 
 const STORAGE_KEY = "gameTodo.v2";
@@ -320,36 +337,80 @@ function normalizeCategory(category) {
   return CATEGORIES.includes(category) ? category : "work";
 }
 
-/* ===== 올클리어 ===== */
-// 대상 할 일(기록용 제외)이 3개 이상이고, 그날 할 일(기록용 포함)이 모두 완료.
+/* ===== 올클리어 · 펫 성장 ===== */
+// 그날 할 일이 3개 이상이고 모두 완료.
 function isAllClear(date) {
-  const { rewardable, remaining } = getProgress(date);
-  return rewardable >= CONFIG.MIN_TODOS_FOR_CLEAR && remaining === 0;
+  const { total, remaining } = getProgress(date);
+  return total >= CONFIG.MIN_TODOS_FOR_CLEAR && remaining === 0;
+}
+
+function getPetStage(growth) {
+  let index = 0;
+  PET_STAGES.forEach((stage, i) => {
+    if (growth >= stage.min) index = i;
+  });
+  return { ...PET_STAGES[index], index, next: PET_STAGES[index + 1] ?? null };
 }
 
 /*
- * 할 일 상태를 바꾼 "뒤에" 호출해서 그날의 올클리어 여부를 clearDates에 반영한다.
- * 새로 달성하면 추가, 깨졌으면 제거. (펫 성장·배지 연결은 다음 단계)
- * 반환값: { date, clearChange: 1 | -1 | 0 }
+ * 할 일 상태를 바꾼 "뒤에" 호출한다. 펫 성장은 이 함수에서만 바뀐다.
+ * - 오늘 날짜만 반영: 올클리어를 새로 달성하면 clearDates에 오늘 추가 + growth +1,
+ *   깨지면 오늘을 빼고 growth -1. clearDates가 하루 한 번만 오르게 막는다.
+ * - 지난 날짜·미래 날짜는 clearDates와 growth를 건드리지 않는다.
+ *   (지난 날짜를 나중에 몰아서 체크해 성장시키는 것을 막기 위해)
+ * 반환값: { date, growthChange: 1 | -1 | 0, stageUp }
  */
-function updateClearDate(date) {
+function updateGrowth(date) {
+  const result = { date, growthChange: 0, stageUp: false };
+  if (date !== getLocalDateString()) return result;
+
   const allClear = isAllClear(date);
   const recorded = state.clearDates.includes(date);
+  const before = getPetStage(state.pet.growth);
+
   if (allClear && !recorded) {
     state.clearDates = [...state.clearDates, date].sort();
-    return { date, clearChange: 1 };
-  }
-  if (!allClear && recorded) {
+    state.pet.growth += 1;
+    result.growthChange = 1;
+  } else if (!allClear && recorded) {
     state.clearDates = state.clearDates.filter((d) => d !== date);
-    return { date, clearChange: -1 };
+    state.pet.growth = Math.max(0, state.pet.growth - 1);
+    result.growthChange = -1;
   }
-  return { date, clearChange: 0 };
+  result.stageUp = getPetStage(state.pet.growth).index > before.index;
+  return result;
+}
+
+// 오늘 올클리어 → 신남, 어제 올클리어 → 보통, 2일 이상 못 함 → 시무룩.
+// 막 만든 펫(만든 날·다음 날)은 아직 기회가 없었으므로 보통.
+function getPetMood() {
+  const today = getLocalDateString();
+  const yesterday = addDays(today, -1);
+  if (state.clearDates.includes(today)) return PET_MOODS.happy;
+  if (state.clearDates.includes(yesterday) || state.pet.createdAt >= yesterday) return PET_MOODS.normal;
+  return PET_MOODS.sad;
+}
+
+// 앞뒤 공백 제거 후 1~12자.
+function validatePetName(rawName) {
+  const name = rawName.trim();
+  const length = Array.from(name).length;
+  if (length === 0) return { ok: false, name, error: "이름을 입력해 주세요." };
+  if (length > CONFIG.PET_NAME_MAX_LENGTH) {
+    return { ok: false, name, error: `이름은 ${CONFIG.PET_NAME_MAX_LENGTH}자 이하로 입력해 주세요.` };
+  }
+  return { ok: true, name, error: "" };
 }
 
 /* 아래 변경 함수들은 state만 바꾼다. 저장과 다시 그리기는 commit()이 맡는다.
- * 실패하면 null, 성공하면 updateClearDate()의 결과를 돌려준다. */
+ * 실패하면 null, 성공하면 updateGrowth()의 결과를 돌려준다. */
+
+function isDayFull(date) {
+  return getTodosForDate(date).length >= CONFIG.MAX_TODOS_PER_DAY;
+}
 
 function addTodo(title, category) {
+  if (isDayFull(selectedDate)) return null;
   state.todos.push({
     id: generateId(),
     title,
@@ -359,7 +420,7 @@ function addTodo(title, category) {
     createdAt: Date.now(),
     completedAt: null,
   });
-  return updateClearDate(selectedDate); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
+  return updateGrowth(selectedDate); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
 }
 
 function setTodoDone(id, done) {
@@ -367,7 +428,13 @@ function setTodoDone(id, done) {
   if (!todo || isFutureTodo(todo) || todo.done === done) return null;
   todo.done = done;
   todo.completedAt = done ? Date.now() : null;
-  return { ...updateClearDate(todo.date), recordOnly: done && !isRewardable(todo) };
+  // 지난 날짜를 올클리어한 경우 "성장 없음"을 알려 주기 위한 표시
+  const pastClear = done && todo.date < getLocalDateString() && isAllClear(todo.date);
+  return { ...updateGrowth(todo.date), pastClear };
+}
+
+function renamePet(name) {
+  state.pet.name = name;
 }
 
 function updateTodo(id, title, category) {
@@ -383,7 +450,7 @@ function deleteTodo(id) {
   if (index === -1) return null;
   const [removed] = state.todos.splice(index, 1);
   // 미완료든 완료든 지우면 올클리어 여부가 바뀔 수 있다.
-  return updateClearDate(removed.date);
+  return updateGrowth(removed.date);
 }
 
 function commit() {
@@ -404,12 +471,6 @@ function getVisibleTodos() {
     .sort((a, b) => Number(a.done) - Number(b.done) || a.createdAt - b.createdAt);
 }
 
-// 그 날짜가 지난 뒤에 만든 할 일은 기록용이라 올클리어 최소 개수에 들어가지 않는다.
-// (지난 날짜에 할 일을 몰아 넣어 올클리어를 채우는 것을 막는다.)
-function isRewardable(todo) {
-  return getLocalDateString(new Date(todo.createdAt)) <= todo.date;
-}
-
 // 진행률은 필터와 상관없이 그날 전체 기준.
 function getProgress(date) {
   const todos = getTodosForDate(date);
@@ -419,7 +480,6 @@ function getProgress(date) {
     total,
     done,
     remaining: total - done,
-    rewardable: todos.filter(isRewardable).length,
     percent: total === 0 ? 0 : Math.round((done / total) * 100),
   };
 }
@@ -483,18 +543,21 @@ function getClearDateText(date) {
   return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
-// updateClearDate() 결과를 토스트·배너로 보여준다.
-function showClearFeedback(result) {
+// updateGrowth() 결과를 토스트·배너로 보여준다.
+function showGrowthFeedback(result) {
   if (!result) return;
-  const { date, clearChange, recordOnly } = result;
+  const { growthChange, stageUp, pastClear } = result;
 
-  if (recordOnly) {
-    showToast("기록용 할 일은 올클리어 개수에 들어가지 않아요", "info");
+  if (pastClear) {
+    showToast("지난 날짜는 올클리어해도 펫이 자라지 않아요", "info", 2500);
   }
-  if (clearChange > 0) {
-    showBanner(`${getClearDateText(date)} 올클리어!`);
-  } else if (clearChange < 0) {
-    showToast(`${getClearDateText(date)} 올클리어가 풀렸어요`, "loss");
+  if (growthChange > 0) {
+    const stage = getPetStage(state.pet.growth);
+    showBanner(stageUp
+      ? `${stage.icon} ${state.pet.name || "펫"}, ${stage.name} 단계로 성장!`
+      : `오늘 올클리어! ${state.pet.name || "펫"} 성장 +1`);
+  } else if (growthChange < 0) {
+    showToast("오늘 올클리어가 풀려서 성장 -1", "loss");
   }
 }
 
@@ -536,15 +599,7 @@ function createTodoItem(todo) {
     createButton("삭제", "delete", "btn-danger"),
   );
 
-  li.append(checkWrap, title, badge);
-  if (!isRewardable(todo)) {
-    const recordTag = document.createElement("span");
-    recordTag.className = "badge badge-record";
-    recordTag.textContent = "기록용";
-    recordTag.title = "날짜가 지난 뒤에 만든 할 일이라 올클리어 개수에 들어가지 않아요";
-    li.append(recordTag);
-  }
-  li.append(actions);
+  li.append(checkWrap, title, badge, actions);
   return li;
 }
 
@@ -616,12 +671,10 @@ function renderFilter() {
   });
 }
 
-function getRemainingText({ total, remaining, rewardable }, date) {
+function getRemainingText({ total, remaining }) {
   if (total === 0) return "할 일이 없어요";
-  if (rewardable < CONFIG.MIN_TODOS_FOR_CLEAR) {
-    // 지난 날짜에 새로 추가하는 할 일은 기록용이라 더 추가해도 올클리어 조건을 채울 수 없다.
-    if (date < getLocalDateString()) return "올클리어 대상이 아닌 날이에요";
-    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_CLEAR}개부터 (${CONFIG.MIN_TODOS_FOR_CLEAR - rewardable}개 더 추가)`;
+  if (total < CONFIG.MIN_TODOS_FOR_CLEAR) {
+    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_CLEAR}개부터 (${CONFIG.MIN_TODOS_FOR_CLEAR - total}개 더 추가)`;
   }
   if (remaining === 0) return "올클리어! 🎉";
   return `올클리어까지 ${remaining}개 남음`;
@@ -635,7 +688,7 @@ function renderProgress() {
     `${progress.done} / ${progress.total} 완료 (${progress.percent}%)`;
 
   const remaining = document.getElementById("progress-remaining");
-  remaining.textContent = getRemainingText(progress, selectedDate);
+  remaining.textContent = getRemainingText(progress);
   remaining.classList.toggle("is-clear", isClear);
 
   const fill = document.getElementById("progress-fill");
@@ -679,9 +732,42 @@ function renderTodos() {
   }
 }
 
-// 화면 전체를 다시 그린다. (펫·달력 탭이 생기면 여기에 추가)
+function renderPet() {
+  const { pet } = state;
+  const stage = getPetStage(pet.growth);
+  const mood = getPetMood();
+  const name = pet.name || "이름 없는 펫";
+
+  // 헤더 요약
+  document.getElementById("header-pet-icon").textContent = stage.icon;
+  document.getElementById("header-pet-name").textContent = name;
+  document.getElementById("header-pet-mood").textContent = mood.icon;
+  document.getElementById("header-pet").title = `${name} · ${stage.name} · ${mood.label}`;
+
+  // 펫 탭
+  document.getElementById("pet-icon").textContent = stage.icon;
+  document.getElementById("pet-name").textContent = name;
+  document.getElementById("pet-stage").textContent = `${stage.name} 단계 · 성장 ${pet.growth}`;
+  document.getElementById("pet-mood").textContent = `${mood.icon} ${mood.label} · ${mood.note}`;
+
+  // 다음 단계까지 진행률 (현재 단계 시작점부터)
+  const fill = document.getElementById("pet-progress-fill");
+  const next = document.getElementById("pet-next");
+  let percent = 100;
+  if (stage.next) {
+    percent = Math.round(((pet.growth - stage.min) / (stage.next.min - stage.min)) * 100);
+    next.textContent = `${stage.next.icon} ${stage.next.name}까지 올클리어 ${stage.next.min - pet.growth}번 더`;
+  } else {
+    next.textContent = "최고 단계예요!";
+  }
+  fill.style.width = `${percent}%`;
+  document.getElementById("pet-progress").setAttribute("aria-valuenow", String(percent));
+}
+
+// 화면 전체를 다시 그린다.
 function render() {
   renderTodos();
+  renderPet();
 }
 
 function showTodoError(message) {
@@ -705,6 +791,11 @@ function initTodoForm() {
       return;
     }
 
+    if (isDayFull(selectedDate)) {
+      showTodoError(`하루 할 일은 최대 ${CONFIG.MAX_TODOS_PER_DAY}개까지 추가할 수 있어요.`);
+      return;
+    }
+
     if (finishChange(addTodo(result.title, categorySelect.value))) {
       titleInput.value = "";
     }
@@ -712,6 +803,55 @@ function initTodoForm() {
   });
 
   titleInput.addEventListener("input", () => showTodoError(""));
+}
+
+/* ===== 펫 이름 ===== */
+// required: 첫 실행처럼 이름이 꼭 필요할 때는 취소·Esc로 닫을 수 없다.
+function openPetNameDialog(required) {
+  const dialog = document.getElementById("pet-name-dialog");
+  const input = document.getElementById("pet-name-input");
+  dialog.dataset.required = String(required);
+  document.getElementById("pet-name-title").textContent = required ? "펫 이름을 지어 주세요" : "펫 이름 바꾸기";
+  document.getElementById("pet-name-cancel").hidden = required;
+  document.getElementById("pet-name-error").hidden = true;
+  input.value = state.pet.name;
+  if (!dialog.open) dialog.showModal();
+  input.focus();
+  input.select();
+}
+
+function initPetName() {
+  const dialog = document.getElementById("pet-name-dialog");
+  const form = document.getElementById("pet-name-form");
+  const input = document.getElementById("pet-name-input");
+  const error = document.getElementById("pet-name-error");
+  input.maxLength = CONFIG.PET_NAME_MAX_LENGTH;
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const result = validatePetName(input.value);
+    if (!result.ok) {
+      error.textContent = result.error;
+      error.hidden = false;
+      input.focus();
+      return;
+    }
+    renamePet(result.name);
+    commit();
+    dialog.close();
+  });
+
+  input.addEventListener("input", () => {
+    error.hidden = true;
+  });
+  document.getElementById("pet-name-cancel").addEventListener("click", () => dialog.close());
+  // Esc: 이름이 꼭 필요할 때는 닫히지 않게 막는다.
+  dialog.addEventListener("cancel", (e) => {
+    if (dialog.dataset.required === "true") e.preventDefault();
+  });
+
+  document.getElementById("pet-rename").addEventListener("click", () => openPetNameDialog(false));
+  document.getElementById("header-pet").addEventListener("click", () => switchTab("pet"));
 }
 
 function selectDate(date) {
@@ -736,7 +876,7 @@ function checkDayChange() {
     selectedDate = today;
   }
   lastKnownToday = today;
-  renderTodos();
+  render(); // 날짜가 바뀌면 펫 기분도 바뀐다
 }
 
 function initDayWatcher() {
@@ -774,7 +914,7 @@ function finishChange(result) {
     return false;
   }
   commit();
-  showClearFeedback(result);
+  showGrowthFeedback(result);
   return true;
 }
 
@@ -885,6 +1025,7 @@ function init() {
   initFilter();
   initTodoForm();
   initTodoList();
+  initPetName();
   initDayWatcher();
   document.getElementById("celebration").addEventListener("click", hideBanner);
 
@@ -893,9 +1034,15 @@ function init() {
     if (e.key !== STORAGE_KEY) return;
     state = loadState();
     render();
+    // 다른 탭에서 이름을 지었으면 이 탭의 "이름 짓기" 창은 닫는다.
+    const dialog = document.getElementById("pet-name-dialog");
+    if (state.pet.name && dialog.open && dialog.dataset.required === "true") dialog.close();
   });
 
   render();
+  if (!state.pet.name) {
+    openPetNameDialog(true); // 처음 실행(또는 v1에서 옮겨 온 직후)에는 이름부터 짓는다
+  }
 }
 
 init();
