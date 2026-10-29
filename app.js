@@ -2,38 +2,39 @@
 
 /* ===== 설정 ===== */
 const CONFIG = Object.freeze({
-  POINTS_PER_TODO: 10,
-  ALL_CLEAR_BONUS: 50,
-  MIN_TODOS_FOR_BONUS: 3,
+  MIN_TODOS_FOR_CLEAR: 3, // 올클리어로 인정하는 최소 할 일 수 (기록용 제외)
 });
 
-const STORAGE_KEY = "gameTodo.v1";
-// 읽을 수 없는 저장값은 지우기 전에 여기에 한 벌 남겨 둔다 (가장 최근 것만).
+const STORAGE_KEY = "gameTodo.v2";
+const STATE_VERSION = 2;
+// 이전 버전(포인트·상점) 저장 키. 읽기만 하고 지우지 않는다.
+const LEGACY_KEY = "gameTodo.v1";
+// v1 → v2 변환 직전에 v1 원본 문자열을 그대로 복사해 두는 키.
+const LEGACY_BACKUP_KEY = "gameTodo.v1.backup";
+// v2 저장값을 읽을 수 없을 때 덮어쓰기 전에 원본을 남겨 두는 키 (가장 최근 것만).
 const BACKUP_KEY = "gameTodo.backup";
-const STATE_VERSION = 1;
 
 /*
- * 저장 형식 변환. 키는 "변환 전 버전", 값은 그 버전의 상태를 다음 버전으로 바꾸는 함수.
+ * 같은 키(gameTodo.v2) 안에서의 저장 형식 변환. 키는 "변환 전 버전", 값은 다음 버전으로 바꾸는 함수.
  * 상태 구조를 바꿀 때는 STATE_VERSION을 올리고 여기에 변환 함수를 추가한다. 예:
- *   1: (s) => ({ ...s, version: 2, streak: 0 }),
+ *   2: (s) => ({ ...s, version: 3, streak: 0 }),
+ * (v1 → v2는 저장 키까지 바뀌므로 migrateFromV1()이 따로 맡는다.)
  */
 const MIGRATIONS = {};
 const CATEGORIES = ["work", "personal", "study"];
 const CATEGORY_LABELS = { work: "업무", personal: "개인", study: "공부" };
 const TITLE_MAX_LENGTH = 50;
 
-// 상점 상품 (저장하지 않음). 구매 내역에는 구매 당시의 name/price를 따로 남긴다.
-const SHOP_ITEMS = Object.freeze([
-  { id: "triangle-kimbap", name: "삼각김밥", price: 200, icon: "🍙" },
-  { id: "americano", name: "아메리카노", price: 500, icon: "☕" },
-  { id: "ice-cream", name: "아이스크림", price: 800, icon: "🍦" },
-  { id: "burger-set", name: "버거 세트", price: 1500, icon: "🍔" },
-  { id: "movie-ticket", name: "영화 관람권", price: 3000, icon: "🎬" },
-]);
-
-const COUPON_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
 /*
+ * 상태 구조 (v2):
+ * {
+ *   version: 2,
+ *   todos: [todo, ...],
+ *   clearDates: ["YYYY-MM-DD", ...],   // 올클리어한 날짜 (오름차순, 중복 없음)
+ *   pet: { name: string, growth: number, createdAt: "YYYY-MM-DD" },
+ *   badges: [string, ...]              // 받은 배지 id
+ * }
+ *
  * todo 구조:
  * {
  *   id: string,
@@ -75,40 +76,46 @@ function formatDateLabel(dateString) {
   return `${dateString}(${WEEKDAYS[parseLocalDate(dateString).getDay()]})`;
 }
 
-// "2026-10-29 14:05" (로컬 시간)
-function formatDateTime(timestamp) {
-  const date = new Date(timestamp);
-  const h = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  return `${getLocalDateString(date)} ${h}:${min}`;
+/* ===== 저장소 접근 ===== */
+// localStorage는 차단·용량 초과 등으로 예외를 던질 수 있으므로 모든 접근을 여기서 감싼다.
+function readStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (err) {
+    console.error(`저장소에서 "${key}"를 읽을 수 없습니다.`, err);
+    return null;
+  }
 }
 
-// 받침 유무로 "을"/"를" 선택. 한글이 아니면 "을(를)".
-function withObjectParticle(word) {
-  const code = word.charCodeAt(word.length - 1) - 0xac00;
-  if (code < 0 || code > 11171) return `${word}을(를)`;
-  return word + (code % 28 === 0 ? "를" : "을");
-}
-
-// 1500 → "1,500P"
-function formatPoints(points) {
-  return `${points.toLocaleString("ko-KR")}P`;
+function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err) {
+    console.error(`저장소에 "${key}"를 쓸 수 없습니다.`, err);
+    return false;
+  }
 }
 
 /* ===== 상태 ===== */
+function createPet(growth = 0) {
+  return { name: "", growth, createdAt: getLocalDateString() };
+}
+
 function createInitialState() {
   return {
     version: STATE_VERSION,
-    points: 0,
     todos: [],
-    bonusDates: [],
-    purchases: [],
+    clearDates: [],
+    pet: createPet(),
+    badges: [],
   };
 }
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const isObject = (value) => value !== null && typeof value === "object";
+const isDateString = (value) => typeof value === "string" && DATE_PATTERN.test(value);
 
 function isValidTodo(todo) {
   return isObject(todo)
@@ -118,15 +125,6 @@ function isValidTodo(todo) {
     && typeof todo.date === "string" && DATE_PATTERN.test(todo.date)
     && typeof todo.done === "boolean"
     && Number.isFinite(todo.createdAt);
-}
-
-function isValidPurchase(purchase) {
-  return isObject(purchase)
-    && typeof purchase.id === "string"
-    && typeof purchase.name === "string"
-    && Number.isFinite(purchase.price)
-    && typeof purchase.code === "string"
-    && Number.isFinite(purchase.purchasedAt);
 }
 
 // 배열이면 형식이 맞는 항목만 남긴다. 버린 항목이 있으면 problems에 적는다.
@@ -157,43 +155,100 @@ function migrateState(raw) {
   return current;
 }
 
-// 현재 버전 형태인지 확인하고, 빠지거나 잘못된 값은 기본값으로 바꾸거나 버린다.
-function normalizeState(raw, problems = []) {
-  const todos = keepValid(raw.todos, isValidTodo, "할 일", problems).map((todo) => ({
+function normalizeTodos(list, problems) {
+  return keepValid(list, isValidTodo, "할 일", problems).map((todo) => ({
     ...todo,
     completedAt: todo.done && Number.isFinite(todo.completedAt) ? todo.completedAt : null,
   }));
-  const isDate = (d) => typeof d === "string" && DATE_PATTERN.test(d);
-  const bonusDates = [...new Set(keepValid(raw.bonusDates, isDate, "보너스 날짜", problems))];
+}
+
+// 형식이 맞는 날짜만 남기고 중복 제거 + 오름차순 정렬.
+function normalizeDates(list, label, problems) {
+  return [...new Set(keepValid(list, isDateString, label, problems))].sort();
+}
+
+function normalizePet(raw, problems) {
+  if (!isObject(raw)) {
+    if (raw !== undefined) problems.push("펫 정보가 객체가 아님");
+    return createPet();
+  }
+  const growthOk = Number.isInteger(raw.growth) && raw.growth >= 0;
+  if (!growthOk) problems.push("펫 성장치가 잘못됨");
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    growth: growthOk ? raw.growth : 0,
+    createdAt: isDateString(raw.createdAt) ? raw.createdAt : getLocalDateString(),
+  };
+}
+
+// 현재 버전 형태인지 확인하고, 빠지거나 잘못된 값은 기본값으로 바꾸거나 버린다.
+function normalizeState(raw, problems = []) {
   return {
     version: STATE_VERSION,
-    points: Number.isFinite(raw.points) ? Math.max(0, raw.points) : 0,
-    todos,
-    bonusDates,
-    purchases: keepValid(raw.purchases, isValidPurchase, "구매 내역", problems),
+    todos: normalizeTodos(raw.todos, problems),
+    clearDates: normalizeDates(raw.clearDates, "올클리어 날짜", problems),
+    pet: normalizePet(raw.pet, problems),
+    badges: [...new Set(keepValid(raw.badges, (id) => typeof id === "string", "배지", problems))],
   };
 }
 
 // 다음 저장 때 덮어써지기 전에 원본 문자열을 백업 키에 남긴다.
 function backupRawState(json, reason) {
   console.warn(`저장 데이터 문제(${reason}). 원본을 localStorage "${BACKUP_KEY}"에 백업합니다.`);
-  try {
-    localStorage.setItem(BACKUP_KEY, JSON.stringify({ backedUpAt: Date.now(), reason, data: json }));
-  } catch (err) {
-    console.error("백업에 실패했습니다.", err);
+  writeStorage(BACKUP_KEY, JSON.stringify({ backedUpAt: Date.now(), reason, data: json }));
+}
+
+/*
+ * v1 상태 → v2 상태.
+ * - todos는 그대로 (형식이 잘못된 항목만 버림)
+ * - bonusDates → clearDates, 펫 성장치는 올클리어한 날 수로 시작
+ * - points, purchases는 옮기지 않는다 (v1 원본은 백업 키와 v1 키에 남아 있음)
+ */
+function convertV1ToV2(v1) {
+  const problems = [];
+  const clearDates = normalizeDates(v1.bonusDates, "보너스 날짜", problems);
+  const converted = {
+    version: STATE_VERSION,
+    todos: normalizeTodos(v1.todos, problems),
+    clearDates,
+    pet: createPet(clearDates.length),
+    badges: [],
+  };
+  return { converted, problems };
+}
+
+// v2가 없고 v1이 있을 때 한 번 실행된다. 결과는 바로 v2 키에 저장해서 다음부터는 v2를 읽는다.
+// v1이 깨졌거나 v1 형식이 아니면 빈 v2로 시작한다. 어느 경우든 v1 키는 지우지 않는다.
+function migrateFromV1(legacyJson) {
+  if (!writeStorage(LEGACY_BACKUP_KEY, legacyJson)) {
+    console.warn(`v1 원본을 "${LEGACY_BACKUP_KEY}"에 복사하지 못했습니다. 원본은 "${LEGACY_KEY}"에 그대로 있습니다.`);
   }
+
+  let next;
+  try {
+    const v1 = JSON.parse(legacyJson);
+    if (!isObject(v1) || v1.version !== 1) {
+      throw new Error(`v1 형식이 아님 (version: ${isObject(v1) ? v1.version : typeof v1})`);
+    }
+    const { converted, problems } = convertV1ToV2(v1);
+    if (problems.length > 0) {
+      console.warn(`v1 → v2 변환 중 건너뛴 항목: ${problems.join(", ")}`);
+    }
+    next = converted;
+  } catch (err) {
+    console.warn("v1 데이터를 변환할 수 없어 빈 상태로 시작합니다.", err);
+    next = createInitialState();
+  }
+
+  writeStorage(STORAGE_KEY, JSON.stringify(next));
+  return next;
 }
 
 function loadState() {
-  let json;
-  try {
-    json = localStorage.getItem(STORAGE_KEY);
-  } catch (err) {
-    console.error("저장소를 읽을 수 없어 초기 상태로 시작합니다.", err);
-    return createInitialState();
-  }
+  const json = readStorage(STORAGE_KEY);
   if (json === null) {
-    return createInitialState();
+    const legacyJson = readStorage(LEGACY_KEY);
+    return legacyJson === null ? createInitialState() : migrateFromV1(legacyJson);
   }
 
   let raw;
@@ -223,13 +278,7 @@ function loadState() {
 }
 
 function saveState() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return true;
-  } catch (err) {
-    console.error("상태를 저장하지 못했습니다.", err);
-    return false;
-  }
+  return writeStorage(STORAGE_KEY, JSON.stringify(state));
 }
 
 let state = loadState();
@@ -271,59 +320,34 @@ function normalizeCategory(category) {
   return CATEGORIES.includes(category) ? category : "work";
 }
 
-/* ===== 포인트 ===== */
-// 포인트 대상 할 일이 3개 이상이고, 그날 할 일(기록용 포함)이 모두 완료.
+/* ===== 올클리어 ===== */
+// 대상 할 일(기록용 제외)이 3개 이상이고, 그날 할 일(기록용 포함)이 모두 완료.
 function isAllClear(date) {
   const { rewardable, remaining } = getProgress(date);
-  return rewardable >= CONFIG.MIN_TODOS_FOR_BONUS && remaining === 0;
+  return rewardable >= CONFIG.MIN_TODOS_FOR_CLEAR && remaining === 0;
 }
 
 /*
- * 모든 포인트 변경은 이 함수에서만 한다. 할 일 상태를 바꾼 "뒤에" 호출한다.
- * - doneDelta: 이번 변경으로 늘어난(+1) / 줄어든(-1) 포인트 대상 완료 항목 수 → ±POINTS_PER_TODO
- * - 그날의 올클리어 여부를 다시 확인해서, 새로 달성하면 보너스 지급 + bonusDates에 추가,
- *   깨졌으면 보너스 회수 + bonusDates에서 제거. bonusDates가 중복 지급을 막는다.
- * - 포인트는 0 밑으로 내려가지 않는다. 회수할 포인트가 모자라면 포인트는 건드리지 않고
- *   shortage(모자란 양)를 돌려준다. 호출한 쪽이 tryChange()로 변경 전체를 되돌린다.
- * 반환값: { date, doneDelta, bonusChange: 1 | -1 | 0, shortage }
+ * 할 일 상태를 바꾼 "뒤에" 호출해서 그날의 올클리어 여부를 clearDates에 반영한다.
+ * 새로 달성하면 추가, 깨졌으면 제거. (펫 성장·배지 연결은 다음 단계)
+ * 반환값: { date, clearChange: 1 | -1 | 0 }
  */
-function settlePoints(date, doneDelta) {
-  let delta = doneDelta * CONFIG.POINTS_PER_TODO;
-  let bonusChange = 0;
-
+function updateClearDate(date) {
   const allClear = isAllClear(date);
-  const hasBonus = state.bonusDates.includes(date);
-  if (allClear && !hasBonus) {
-    delta += CONFIG.ALL_CLEAR_BONUS;
-    state.bonusDates.push(date);
-    bonusChange = 1;
-  } else if (!allClear && hasBonus) {
-    delta -= CONFIG.ALL_CLEAR_BONUS;
-    state.bonusDates = state.bonusDates.filter((d) => d !== date);
-    bonusChange = -1;
+  const recorded = state.clearDates.includes(date);
+  if (allClear && !recorded) {
+    state.clearDates = [...state.clearDates, date].sort();
+    return { date, clearChange: 1 };
   }
-
-  const next = state.points + delta;
-  if (next < 0) {
-    return { date, doneDelta, bonusChange, shortage: -next };
+  if (!allClear && recorded) {
+    state.clearDates = state.clearDates.filter((d) => d !== date);
+    return { date, clearChange: -1 };
   }
-  state.points = next;
-  return { date, doneDelta, bonusChange, shortage: 0 };
+  return { date, clearChange: 0 };
 }
 
-// 변경을 적용해 보고, 포인트가 모자라 회수할 수 없으면 state를 통째로 되돌린다.
-// 회수를 건너뛰고 진행하면 "해제 → 다시 완료"로 포인트를 계속 얻을 수 있기 때문.
-function tryChange(change) {
-  const snapshot = structuredClone(state);
-  const result = change();
-  if (result?.shortage > 0) {
-    state = snapshot;
-  }
-  return result;
-}
-
-/* 아래 변경 함수들은 state(포인트 포함)만 바꾼다. 저장과 다시 그리기는 commit()이 맡는다.
- * 실패하면 null, 성공하면 settlePoints()의 결과를 돌려준다. */
+/* 아래 변경 함수들은 state만 바꾼다. 저장과 다시 그리기는 commit()이 맡는다.
+ * 실패하면 null, 성공하면 updateClearDate()의 결과를 돌려준다. */
 
 function addTodo(title, category) {
   state.todos.push({
@@ -335,7 +359,7 @@ function addTodo(title, category) {
     createdAt: Date.now(),
     completedAt: null,
   });
-  return settlePoints(selectedDate, 0); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
+  return updateClearDate(selectedDate); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
 }
 
 function setTodoDone(id, done) {
@@ -343,9 +367,7 @@ function setTodoDone(id, done) {
   if (!todo || isFutureTodo(todo) || todo.done === done) return null;
   todo.done = done;
   todo.completedAt = done ? Date.now() : null;
-  const rewardable = isRewardable(todo);
-  const settled = settlePoints(todo.date, rewardable ? (done ? 1 : -1) : 0);
-  return { ...settled, recordOnly: done && !rewardable };
+  return { ...updateClearDate(todo.date), recordOnly: done && !isRewardable(todo) };
 }
 
 function updateTodo(id, title, category) {
@@ -360,51 +382,8 @@ function deleteTodo(id) {
   const index = state.todos.findIndex((todo) => todo.id === id);
   if (index === -1) return null;
   const [removed] = state.todos.splice(index, 1);
-  // 완료 항목이면 받은 포인트 회수. 미완료든 완료든 올클리어 여부가 바뀔 수 있다.
-  return settlePoints(removed.date, removed.done && isRewardable(removed) ? -1 : 0);
-}
-
-/* ===== 상점 ===== */
-function findShopItem(itemId) {
-  return SHOP_ITEMS.find((item) => item.id === itemId);
-}
-
-function randomChars(length) {
-  // 36의 배수(252) 이상인 값은 버려서 글자마다 확률이 같게 한다.
-  let result = "";
-  const buf = new Uint8Array(1);
-  while (result.length < length) {
-    crypto.getRandomValues(buf);
-    if (buf[0] < 252) result += COUPON_CHARS[buf[0] % COUPON_CHARS.length];
-  }
-  return result;
-}
-
-// "GIFT-XXXX-XXXX". 기존 구매 내역과 겹치면 다시 만든다.
-function generateCouponCode() {
-  let code;
-  do {
-    code = `GIFT-${randomChars(4)}-${randomChars(4)}`;
-  } while (state.purchases.some((p) => p.code === code));
-  return code;
-}
-
-// 포인트가 충분하면 차감하고 구매 기록을 남긴다. 실패하면 null.
-function purchaseItem(itemId) {
-  const item = findShopItem(itemId);
-  if (!item || state.points < item.price) return null;
-
-  state.points -= item.price;
-  const purchase = {
-    id: generateId(),
-    itemId: item.id,
-    name: item.name,
-    price: item.price,
-    code: generateCouponCode(),
-    purchasedAt: Date.now(),
-  };
-  state.purchases.push(purchase);
-  return purchase;
+  // 미완료든 완료든 지우면 올클리어 여부가 바뀔 수 있다.
+  return updateClearDate(removed.date);
 }
 
 function commit() {
@@ -425,8 +404,8 @@ function getVisibleTodos() {
     .sort((a, b) => Number(a.done) - Number(b.done) || a.createdAt - b.createdAt);
 }
 
-// 그 날짜가 지난 뒤에 만든 할 일은 기록용이라 포인트·보너스 대상이 아니다.
-// (그날 또는 미리 만들어 둔 할 일은 나중에 완료해도 포인트를 받는다.)
+// 그 날짜가 지난 뒤에 만든 할 일은 기록용이라 올클리어 최소 개수에 들어가지 않는다.
+// (지난 날짜에 할 일을 몰아 넣어 올클리어를 채우는 것을 막는다.)
 function isRewardable(todo) {
   return getLocalDateString(new Date(todo.createdAt)) <= todo.date;
 }
@@ -443,21 +422,6 @@ function getProgress(date) {
     rewardable: todos.filter(isRewardable).length,
     percent: total === 0 ? 0 : Math.round((done / total) * 100),
   };
-}
-
-/* ===== 렌더링 ===== */
-let renderedPoints = null; // 직전에 그린 포인트. 처음 그릴 때는 애니메이션 없음.
-
-function renderPoints() {
-  const el = document.getElementById("points-value");
-  el.textContent = state.points.toLocaleString("ko-KR");
-
-  if (renderedPoints !== null && renderedPoints !== state.points) {
-    el.classList.remove("is-up", "is-down");
-    void el.offsetWidth; // 클래스를 다시 붙여도 애니메이션이 처음부터 재생되게
-    el.classList.add(state.points > renderedPoints ? "is-up" : "is-down");
-  }
-  renderedPoints = state.points;
 }
 
 /* ===== 게임 효과 ===== */
@@ -519,22 +483,18 @@ function getClearDateText(date) {
   return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
-// settlePoints() 결과를 토스트·배너로 보여준다.
-function showPointFeedback(result) {
+// updateClearDate() 결과를 토스트·배너로 보여준다.
+function showClearFeedback(result) {
   if (!result) return;
-  const { date, doneDelta, bonusChange, recordOnly } = result;
+  const { date, clearChange, recordOnly } = result;
 
   if (recordOnly) {
-    showToast("기록용 할 일이라 포인트는 없어요", "info");
+    showToast("기록용 할 일은 올클리어 개수에 들어가지 않아요", "info");
   }
-  if (doneDelta !== 0) {
-    const amount = Math.abs(doneDelta) * CONFIG.POINTS_PER_TODO;
-    showToast(doneDelta > 0 ? `+${amount}P` : `-${amount}P`, doneDelta > 0 ? "gain" : "loss");
-  }
-  if (bonusChange > 0) {
-    showBanner(`${getClearDateText(date)} 올클리어! +${CONFIG.ALL_CLEAR_BONUS}P`);
-  } else if (bonusChange < 0) {
-    showToast(`올클리어 보너스 -${CONFIG.ALL_CLEAR_BONUS}P`, "loss");
+  if (clearChange > 0) {
+    showBanner(`${getClearDateText(date)} 올클리어!`);
+  } else if (clearChange < 0) {
+    showToast(`${getClearDateText(date)} 올클리어가 풀렸어요`, "loss");
   }
 }
 
@@ -581,7 +541,7 @@ function createTodoItem(todo) {
     const recordTag = document.createElement("span");
     recordTag.className = "badge badge-record";
     recordTag.textContent = "기록용";
-    recordTag.title = "날짜가 지난 뒤에 만든 할 일이라 포인트가 없어요";
+    recordTag.title = "날짜가 지난 뒤에 만든 할 일이라 올클리어 개수에 들어가지 않아요";
     li.append(recordTag);
   }
   li.append(actions);
@@ -658,10 +618,10 @@ function renderFilter() {
 
 function getRemainingText({ total, remaining, rewardable }, date) {
   if (total === 0) return "할 일이 없어요";
-  if (rewardable < CONFIG.MIN_TODOS_FOR_BONUS) {
-    // 지난 날짜에 새로 추가하는 할 일은 기록용이라 더 추가해도 보너스 조건을 채울 수 없다.
-    if (date < getLocalDateString()) return "올클리어 보너스 대상이 아닌 날이에요";
-    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_BONUS}개부터 (${CONFIG.MIN_TODOS_FOR_BONUS - rewardable}개 더 추가)`;
+  if (rewardable < CONFIG.MIN_TODOS_FOR_CLEAR) {
+    // 지난 날짜에 새로 추가하는 할 일은 기록용이라 더 추가해도 올클리어 조건을 채울 수 없다.
+    if (date < getLocalDateString()) return "올클리어 대상이 아닌 날이에요";
+    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_CLEAR}개부터 (${CONFIG.MIN_TODOS_FOR_CLEAR - rewardable}개 더 추가)`;
   }
   if (remaining === 0) return "올클리어! 🎉";
   return `올클리어까지 ${remaining}개 남음`;
@@ -719,91 +679,9 @@ function renderTodos() {
   }
 }
 
-function createShopCard(item) {
-  const card = document.createElement("div");
-  card.className = "shop-card";
-
-  const icon = document.createElement("span");
-  icon.className = "shop-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = item.icon;
-
-  const name = document.createElement("span");
-  name.className = "shop-name";
-  name.textContent = item.name;
-
-  const price = document.createElement("span");
-  price.className = "shop-price";
-  price.textContent = formatPoints(item.price);
-
-  const lack = item.price - state.points;
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn btn-primary";
-  btn.textContent = "구매";
-  btn.dataset.itemId = item.id;
-  btn.disabled = lack > 0;
-
-  const lackText = document.createElement("p");
-  lackText.className = "shop-lack";
-  lackText.textContent = lack > 0 ? `${formatPoints(lack)} 부족` : "";
-
-  card.append(icon, name, price, btn, lackText);
-  return card;
-}
-
-function renderShop() {
-  document.getElementById("shop-grid").replaceChildren(...SHOP_ITEMS.map(createShopCard));
-}
-
-function createHistoryItem(purchase) {
-  const li = document.createElement("li");
-  li.className = "history-item";
-
-  const icon = document.createElement("span");
-  icon.className = "history-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = findShopItem(purchase.itemId)?.icon ?? "🎁";
-
-  const name = document.createElement("span");
-  name.className = "history-name";
-  name.textContent = purchase.name;
-
-  const price = document.createElement("span");
-  price.className = "history-price";
-  price.textContent = `-${formatPoints(purchase.price)}`;
-
-  const date = document.createElement("span");
-  date.className = "history-date";
-  date.textContent = formatDateTime(purchase.purchasedAt);
-
-  const code = document.createElement("span");
-  code.className = "history-code";
-  code.textContent = purchase.code;
-
-  li.append(icon, name, price, date, code);
-  return li;
-}
-
-function renderHistory() {
-  // 뒤집은 뒤 안정 정렬 → 같은 시각(ms)에 산 것도 나중에 산 것이 위로.
-  const purchases = [...state.purchases].reverse().sort((a, b) => b.purchasedAt - a.purchasedAt);
-  document.getElementById("history-list").replaceChildren(...purchases.map(createHistoryItem));
-  document.getElementById("history-empty").hidden = purchases.length > 0;
-}
-
-function showCouponDialog(purchase) {
-  document.getElementById("coupon-icon").textContent = findShopItem(purchase.itemId)?.icon ?? "🎁";
-  document.getElementById("coupon-item").textContent = `${purchase.name} · ${formatPoints(purchase.price)} 사용`;
-  document.getElementById("coupon-code").textContent = purchase.code;
-  document.getElementById("coupon-dialog").showModal();
-}
-
+// 화면 전체를 다시 그린다. (펫·달력 탭이 생기면 여기에 추가)
 function render() {
-  renderPoints();
   renderTodos();
-  renderShop();
-  renderHistory();
 }
 
 function showTodoError(message) {
@@ -827,33 +705,13 @@ function initTodoForm() {
       return;
     }
 
-    const settled = tryChange(() => addTodo(result.title, categorySelect.value));
-    if (finishChange(settled, (lack) => `올클리어 보너스를 돌려줄 포인트가 ${lack} 부족해서 추가할 수 없어요`)) {
+    if (finishChange(addTodo(result.title, categorySelect.value))) {
       titleInput.value = "";
     }
     titleInput.focus();
   });
 
   titleInput.addEventListener("input", () => showTodoError(""));
-}
-
-function initShop() {
-  document.getElementById("shop-grid").addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-item-id]");
-    if (!btn) return;
-    const item = findShopItem(btn.dataset.itemId);
-    if (!item) return;
-    if (!confirm(`${withObjectParticle(item.name)} ${formatPoints(item.price)}로 구매할까요?`)) return;
-
-    const purchase = purchaseItem(item.id);
-    if (!purchase) {
-      alert("포인트가 부족해요.");
-      render();
-      return;
-    }
-    commit();
-    showCouponDialog(purchase);
-  });
 }
 
 function selectDate(date) {
@@ -909,20 +767,14 @@ function initFilter() {
   });
 }
 
-// tryChange() 결과를 마무리한다: 성공이면 저장·다시 그리기·효과, 포인트 부족이면 안내만.
-// blockedMessage(모자란 포인트 문자열) → 안내 문구
-function finishChange(settled, blockedMessage) {
-  if (!settled) {
-    renderTodos();
-    return false;
-  }
-  if (settled.shortage > 0) {
-    showToast(blockedMessage(formatPoints(settled.shortage)), "warn", 2500);
-    renderTodos(); // 체크박스 등 화면을 원래 상태로
+// 변경 함수의 결과를 마무리한다: 성공이면 저장·다시 그리기·효과, 실패(null)면 화면만 원래대로.
+function finishChange(result) {
+  if (!result) {
+    renderTodos(); // 막힌 체크박스 등을 원래 상태로
     return false;
   }
   commit();
-  showPointFeedback(settled);
+  showClearFeedback(result);
   return true;
 }
 
@@ -943,8 +795,7 @@ function initTodoList() {
 
   list.addEventListener("change", (e) => {
     if (e.target.dataset.action !== "toggle") return;
-    const settled = tryChange(() => setTodoDone(getId(e.target), e.target.checked));
-    finishChange(settled, (lack) => `포인트가 ${lack} 부족해서 완료를 해제할 수 없어요`);
+    finishChange(setTodoDone(getId(e.target), e.target.checked));
   });
 
   list.addEventListener("click", (e) => {
@@ -960,8 +811,7 @@ function initTodoList() {
       const todo = findTodo(id);
       // confirm()은 일반 텍스트로만 표시되므로 제목을 넣어도 안전하다.
       if (todo && confirm(`"${todo.title}" 할 일을 삭제할까요?`)) {
-        const settled = tryChange(() => deleteTodo(id));
-        finishChange(settled, (lack) => `포인트가 ${lack} 부족해서 삭제할 수 없어요`);
+        finishChange(deleteTodo(id));
       }
     }
   });
@@ -1035,7 +885,6 @@ function init() {
   initFilter();
   initTodoForm();
   initTodoList();
-  initShop();
   initDayWatcher();
   document.getElementById("celebration").addEventListener("click", hideBanner);
 

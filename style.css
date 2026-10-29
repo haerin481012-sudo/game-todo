@@ -71,56 +71,6 @@ body {
   white-space: nowrap;
 }
 
-.points {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 6px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.points-label {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.points-value {
-  display: inline-block;
-  font-size: 1.2rem;
-  color: var(--gold);
-  font-variant-numeric: tabular-nums;
-}
-
-.points-value.is-up {
-  animation: points-up 0.6s ease-out;
-}
-
-.points-value.is-down {
-  animation: points-down 0.6s ease-out;
-}
-
-@keyframes points-up {
-  0% { transform: scale(1); }
-  30% { transform: scale(1.45); color: var(--gain); }
-  100% { transform: scale(1); }
-}
-
-@keyframes points-down {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-4px); color: var(--danger); }
-  40% { transform: translateX(4px); color: var(--danger); }
-  60% { transform: translateX(-2px); }
-}
-
-.points-unit {
-  font-size: 0.85rem;
-  color: var(--gold);
-  font-weight: 600;
-}
-
 /* ===== 탭 ===== */
 .tabs {
   display: flex;
@@ -483,166 +433,6 @@ body {
   color: var(--muted);
 }
 
-/* ===== 상점 ===== */
-.shop-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
-}
-
-.shop-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  padding: 16px 12px;
-  text-align: center;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.shop-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
-}
-
-.shop-icon {
-  font-size: 2.4rem;
-  line-height: 1.2;
-}
-
-.shop-name {
-  font-weight: 600;
-}
-
-.shop-price {
-  color: var(--gold);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.shop-card .btn {
-  width: 100%;
-  margin-top: 8px;
-}
-
-.shop-lack {
-  min-height: 1.3em;
-  margin: 0;
-  font-size: 0.8rem;
-  color: var(--danger);
-}
-
-/* ===== 구매 내역 ===== */
-.history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.history-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 2px 12px;
-  align-items: center;
-  padding: 12px 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.history-item:last-child {
-  border-bottom: none;
-}
-
-.history-icon {
-  grid-row: span 2;
-  font-size: 1.8rem;
-}
-
-.history-name {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.history-price {
-  color: var(--danger);
-  font-weight: 600;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.history-date {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.history-code {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
-  text-align: right;
-}
-
-/* ===== 쿠폰 팝업 ===== */
-.dialog {
-  width: min(320px, calc(100vw - 32px));
-  padding: 24px 20px 20px;
-  text-align: center;
-  color: var(--text);
-  background: var(--surface);
-  border: none;
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-
-.dialog[open] {
-  animation: pop-in 0.25s ease-out;
-}
-
-.dialog::backdrop {
-  background: var(--overlay);
-}
-
-.dialog-icon {
-  margin: 0;
-  font-size: 3rem;
-}
-
-.dialog-title {
-  margin: 4px 0;
-  font-size: 1.2rem;
-}
-
-.dialog-item {
-  margin: 0 0 12px;
-  color: var(--muted);
-}
-
-.coupon-code {
-  margin: 0;
-  padding: 12px;
-  font-family: var(--font-mono);
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  overflow-wrap: anywhere;
-  background: var(--accent-soft);
-  border: 2px dashed var(--accent);
-  border-radius: var(--radius-small);
-  user-select: all;
-}
-
-.dialog-note {
-  margin: 12px 0 16px;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.dialog .btn {
-  width: 100%;
-}
-
 /* ===== 토스트 ===== */
 .toast-area {
   position: fixed;
@@ -781,14 +571,6 @@ body {
     font-size: 1.15rem;
   }
 
-  .points {
-    padding: 4px 12px;
-  }
-
-  .points-label {
-    font-size: 0.75rem;
-  }
-
   .tabs {
     padding: 0 8px;
   }
@@ -828,14 +610,6 @@ body {
 
   .todo-item {
     gap: 6px;
-  }
-
-  .shop-grid {
-    gap: 8px;
-  }
-
-  .shop-card {
-    padding: 12px 8px;
   }
 }
 
