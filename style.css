@@ -514,6 +514,89 @@ body {
   color: var(--muted);
 }
 
+/* ===== 연속 달성 · 배지 ===== */
+.streak-card {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.streak-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.streak-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 4px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-small);
+}
+
+.streak-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.streak-value {
+  font-size: 1.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.streak-note {
+  margin: 12px 0;
+  text-align: center;
+  font-weight: 600;
+}
+
+.badge-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.badge-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 8px;
+  text-align: center;
+  background: var(--gold-soft);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-small);
+}
+
+.badge-card.is-locked {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+}
+
+.badge-card.is-locked .badge-card-name {
+  color: var(--muted);
+}
+
+.badge-card-icon {
+  font-size: 1.8rem;
+  line-height: 1.2;
+}
+
+.badge-card-name {
+  font-size: 0.9rem;
+}
+
+.badge-card-condition {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 /* ===== 이름 짓기 팝업 ===== */
 .dialog {
   width: min(340px, calc(100vw - 32px));

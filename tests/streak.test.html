@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>연속 달성 계산 테스트</title>
+  <style>
+    body { margin: 16px; font-family: system-ui, "Malgun Gothic", sans-serif; }
+    pre { white-space: pre-wrap; line-height: 1.6; }
+  </style>
+  <script src="../streak.js"></script>
+</head>
+<body>
+  <h1>연속 달성 계산 테스트</h1>
+  <p>브라우저에서 열면 결과가 아래와 개발자 도구 콘솔(F12)에 함께 나옵니다.</p>
+  <pre id="out"></pre>
+  <script>
+    "use strict";
+    const out = document.getElementById("out");
+    const results = [];
+
+    function check(name, actual, expected) {
+      const pass = JSON.stringify(actual) === JSON.stringify(expected);
+      results.push({ 결과: pass ? "PASS" : "FAIL", 케이스: name, 기대값: JSON.stringify(expected), 실제값: JSON.stringify(actual) });
+      console.assert(pass, `${name}: 기대 ${JSON.stringify(expected)}, 실제 ${JSON.stringify(actual)}`);
+      out.textContent += `${pass ? "✅" : "❌"} ${name} → ${JSON.stringify(actual)}${pass ? "" : ` (기대 ${JSON.stringify(expected)})`}\n`;
+    }
+
+    const T = "2026-10-29"; // 테스트 기준 "오늘" (고정)
+    const ids = (badges) => badges.map((b) => b.id);
+
+    // ----- 현재 연속 -----
+    check("기록 없음", getCurrentStreak([], T), 0);
+    check("오늘만", getCurrentStreak(["2026-10-29"], T), 1);
+    check("3일 연속 (오늘 포함)", getCurrentStreak(["2026-10-27", "2026-10-28", "2026-10-29"], T), 3);
+    check("오늘 미완료, 어제까지 2일 연속 → 2", getCurrentStreak(["2026-10-27", "2026-10-28"], T), 2);
+    check("오늘·어제 모두 미완료 → 0", getCurrentStreak(["2026-10-26", "2026-10-27"], T), 0);
+    check("중간에 빈 날 (26, 28, 29) → 2", getCurrentStreak(["2026-10-26", "2026-10-28", "2026-10-29"], T), 2);
+    check("중간에 빈 날 + 오늘 미완료 (25, 26, 28) → 1", getCurrentStreak(["2026-10-25", "2026-10-26", "2026-10-28"], T), 1);
+    check("정렬 안 됨 + 중복", getCurrentStreak(["2026-10-29", "2026-10-27", "2026-10-28", "2026-10-28"], T), 3);
+    check("미래 날짜는 세지 않음", getCurrentStreak(["2026-10-29", "2026-10-30", "2026-10-31"], T), 1);
+    check("월 경계 (10/30~11/01)", getCurrentStreak(["2026-10-30", "2026-10-31", "2026-11-01"], "2026-11-01"), 3);
+    check("연 경계 (12/30~01/01)", getCurrentStreak(["2026-12-30", "2026-12-31", "2027-01-01"], "2027-01-01"), 3);
+    check("윤년 (2028-02-28, 02-29, 03-01)", getCurrentStreak(["2028-02-28", "2028-02-29", "2028-03-01"], "2028-03-01"), 3);
+    check("평년 (2027-02-28 → 03-01 이어짐)", getCurrentStreak(["2027-02-28", "2027-03-01"], "2027-03-01"), 2);
+    check("2월 30일 같은 없는 날은 무시", getCurrentStreak(["2027-02-27", "2027-02-30", "2027-03-01"], "2027-03-01"), 1);
+    check("서머타임 시작 주간 (미국 2026-03-08)", getCurrentStreak(["2026-03-07", "2026-03-08", "2026-03-09"], "2026-03-09"), 3);
+    check("서머타임 끝 주간 (미국 2026-11-01)", getCurrentStreak(["2026-10-31", "2026-11-01", "2026-11-02"], "2026-11-02"), 3);
+    const thirty = Array.from({ length: 30 }, (_, i) => addDays(T, -i));
+    check("30일 연속", getCurrentStreak(thirty, T), 30);
+
+    // ----- 최고 기록 -----
+    check("최고: 기록 없음", getBestStreak([]), 0);
+    check("최고: 하루", getBestStreak(["2026-10-01"]), 1);
+    check("최고: 3일 + 빈 날 + 2일 → 3", getBestStreak(["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05", "2026-10-06"]), 3);
+    check("최고: 나중 구간이 더 김", getBestStreak(["2026-10-01", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06"]), 4);
+    check("최고: 정렬 안 됨 + 중복", getBestStreak(["2026-10-03", "2026-10-01", "2026-10-02", "2026-10-02"]), 3);
+    check("최고: 월 경계를 넘는 구간", getBestStreak(["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"]), 4);
+    check("최고: 현재 연속이 끊겨도 유지", getBestStreak(["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-29"]), 3);
+    check("최고: 30일", getBestStreak(thirty), 30);
+
+    // ----- 배지 -----
+    check("배지: 최고 2일 → 없음", getEarnedBadgeIds(2), []);
+    check("배지: 최고 3일 → 불꽃 시작", getEarnedBadgeIds(3), ["streak-3"]);
+    check("배지: 최고 7일", getEarnedBadgeIds(7), ["streak-3", "streak-7"]);
+    check("배지: 최고 13일", getEarnedBadgeIds(13), ["streak-3", "streak-7"]);
+    check("배지: 최고 14일", getEarnedBadgeIds(14), ["streak-3", "streak-7", "streak-14"]);
+    check("배지: 최고 30일 → 전부", getEarnedBadgeIds(30), ["streak-3", "streak-7", "streak-14", "streak-30"]);
+    let merged = mergeBadges([], 3);
+    check("새로 받기: 없음 → 3일", [merged.badges, ids(merged.newlyEarned)], [["streak-3"], ["streak-3"]]);
+    merged = mergeBadges(["streak-3"], 7);
+    check("새로 받기: 3일 배지 보유 → 7일 (7일만 새로)", [merged.badges, ids(merged.newlyEarned)], [["streak-3", "streak-7"], ["streak-7"]]);
+    merged = mergeBadges(["streak-3", "streak-7"], 0);
+    check("끊겨도 유지: 보유 배지 + 최고 0", [merged.badges, ids(merged.newlyEarned)], [["streak-3", "streak-7"], []]);
+    merged = mergeBadges(["streak-3", "streak-7"], 7);
+    check("이미 받은 배지는 다시 안 줌", ids(merged.newlyEarned), []);
+    merged = mergeBadges(["future-badge"], 3);
+    check("모르는 배지 id는 그대로 둠", merged.badges, ["future-badge", "streak-3"]);
+
+    // ----- 날짜 유틸 -----
+    check("addDays 하루 전 (월초)", addDays("2026-11-01", -1), "2026-10-31");
+    check("addDays 하루 뒤 (연말)", addDays("2026-12-31", 1), "2027-01-01");
+
+    const failed = results.filter((r) => r.결과 === "FAIL").length;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const summary = `${results.length}개 중 ${results.length - failed}개 통과, ${failed}개 실패 (시간대: ${tz})`;
+    console.table(results);
+    console.log(summary);
+    out.textContent += `\n${summary}\n`;
+    document.title = failed === 0 ? "PASS" : "FAIL";
+  </script>
+</body>
+</html>

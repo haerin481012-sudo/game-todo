@@ -64,29 +64,9 @@ const TITLE_MAX_LENGTH = 50;
  * }
  */
 
-/* ===== 날짜 유틸 ===== */
-// 로컬 시간 기준 "YYYY-MM-DD". toISOString()은 UTC라 한국 시간 오전 9시 이전엔 전날로 밀린다.
-function getLocalDateString(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
+/* ===== 날짜 표시 ===== */
+// getLocalDateString / parseLocalDate / addDays와 연속 달성 계산은 streak.js에 있다.
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
-
-// "YYYY-MM-DD"를 로컬 자정의 Date로. new Date("YYYY-MM-DD")는 UTC로 해석되므로 쓰지 않는다.
-function parseLocalDate(dateString) {
-  const [y, m, d] = dateString.split("-").map(Number);
-  return new Date(y, m - 1, d);
-}
-
-// 월말·연말도 setDate가 알아서 넘겨준다.
-function addDays(dateString, days) {
-  const date = parseLocalDate(dateString);
-  date.setDate(date.getDate() + days);
-  return getLocalDateString(date);
-}
 
 // "2026-10-29(목)"
 function formatDateLabel(dateString) {
@@ -358,10 +338,11 @@ function getPetStage(growth) {
  *   깨지면 오늘을 빼고 growth -1. clearDates가 하루 한 번만 오르게 막는다.
  * - 지난 날짜·미래 날짜는 clearDates와 growth를 건드리지 않는다.
  *   (지난 날짜를 나중에 몰아서 체크해 성장시키는 것을 막기 위해)
- * 반환값: { date, growthChange: 1 | -1 | 0, stageUp }
+ * - 올클리어가 새로 추가되면 연속 기록을 다시 계산해 배지를 준다(syncBadges).
+ * 반환값: { date, growthChange: 1 | -1 | 0, stageUp, newBadges }
  */
 function updateGrowth(date) {
-  const result = { date, growthChange: 0, stageUp: false };
+  const result = { date, growthChange: 0, stageUp: false, newBadges: [] };
   if (date !== getLocalDateString()) return result;
 
   const allClear = isAllClear(date);
@@ -372,6 +353,7 @@ function updateGrowth(date) {
     state.clearDates = [...state.clearDates, date].sort();
     state.pet.growth += 1;
     result.growthChange = 1;
+    result.newBadges = syncBadges();
   } else if (!allClear && recorded) {
     state.clearDates = state.clearDates.filter((d) => d !== date);
     state.pet.growth = Math.max(0, state.pet.growth - 1);
@@ -379,6 +361,14 @@ function updateGrowth(date) {
   }
   result.stageUp = getPetStage(state.pet.growth).index > before.index;
   return result;
+}
+
+// 최고 연속 기록으로 받을 배지를 state.badges에 더한다. 한 번 받은 배지는 빼지 않는다.
+// 반환값: 새로 받은 배지 목록
+function syncBadges() {
+  const { badges, newlyEarned } = mergeBadges(state.badges, getBestStreak(state.clearDates));
+  state.badges = badges;
+  return newlyEarned;
 }
 
 // 오늘 올클리어 → 신남, 어제 올클리어 → 보통, 2일 이상 못 함 → 시무룩.
@@ -546,16 +536,24 @@ function getClearDateText(date) {
 // updateGrowth() 결과를 토스트·배너로 보여준다.
 function showGrowthFeedback(result) {
   if (!result) return;
-  const { growthChange, stageUp, pastClear } = result;
+  const { growthChange, stageUp, pastClear, newBadges = [] } = result;
 
   if (pastClear) {
     showToast("지난 날짜는 올클리어해도 펫이 자라지 않아요", "info", 2500);
   }
   if (growthChange > 0) {
     const stage = getPetStage(state.pet.growth);
-    showBanner(stageUp
+    const growthText = stageUp
       ? `${stage.icon} ${state.pet.name || "펫"}, ${stage.name} 단계로 성장!`
-      : `오늘 올클리어! ${state.pet.name || "펫"} 성장 +1`);
+      : `오늘 올클리어! ${state.pet.name || "펫"} 성장 +1`;
+    if (newBadges.length > 0) {
+      // 배지가 더 드문 일이라 배너는 배지에, 성장은 토스트로
+      const badge = newBadges[newBadges.length - 1];
+      showBanner(`${badge.icon} 배지 획득! ${badge.name}`);
+      showToast(growthText, "gain", 2500);
+    } else {
+      showBanner(growthText);
+    }
   } else if (growthChange < 0) {
     showToast("오늘 올클리어가 풀려서 성장 -1", "loss");
   }
@@ -764,10 +762,49 @@ function renderPet() {
   document.getElementById("pet-progress").setAttribute("aria-valuenow", String(percent));
 }
 
+function getStreakNote(current, today) {
+  if (state.clearDates.includes(today)) return `오늘까지 ${current}일 연속 올클리어!`;
+  if (current > 0) return `오늘도 올클리어하면 ${current + 1}일 연속이에요.`;
+  return "오늘 올클리어하면 연속 기록이 시작돼요.";
+}
+
+function createBadgeItem(badge) {
+  const owned = state.badges.includes(badge.id);
+  const li = document.createElement("li");
+  li.className = "badge-card";
+  li.classList.toggle("is-locked", !owned);
+
+  const icon = document.createElement("span");
+  icon.className = "badge-card-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = owned ? badge.icon : "🔒";
+
+  const name = document.createElement("strong");
+  name.className = "badge-card-name";
+  name.textContent = badge.name;
+
+  const condition = document.createElement("span");
+  condition.className = "badge-card-condition";
+  condition.textContent = owned ? "획득" : `연속 ${badge.days}일`;
+
+  li.append(icon, name, condition);
+  return li;
+}
+
+function renderStreak() {
+  const today = getLocalDateString();
+  const current = getCurrentStreak(state.clearDates, today);
+  document.getElementById("streak-current").textContent = String(current);
+  document.getElementById("streak-best").textContent = String(getBestStreak(state.clearDates));
+  document.getElementById("streak-note").textContent = getStreakNote(current, today);
+  document.getElementById("badge-list").replaceChildren(...STREAK_BADGES.map(createBadgeItem));
+}
+
 // 화면 전체를 다시 그린다.
 function render() {
   renderTodos();
   renderPet();
+  renderStreak();
 }
 
 function showTodoError(message) {
@@ -1038,6 +1075,9 @@ function init() {
     const dialog = document.getElementById("pet-name-dialog");
     if (state.pet.name && dialog.open && dialog.dataset.required === "true") dialog.close();
   });
+
+  // v1에서 옮겨 온 기록처럼 이미 배지 조건을 채운 경우 조용히 배지를 맞춰 둔다.
+  if (syncBadges().length > 0) saveState();
 
   render();
   if (!state.pet.name) {

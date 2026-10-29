@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Quest To-do</title>
   <link rel="stylesheet" href="style.css">
+  <script src="streak.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -82,6 +83,21 @@
           <div id="pet-progress-fill" class="progress-fill"></div>
         </div>
         <p id="pet-next" class="pet-next"></p>
+      </div>
+
+      <div class="streak-card">
+        <div class="streak-stats">
+          <div class="streak-stat">
+            <span class="streak-label">🔥 현재 연속</span>
+            <span><strong id="streak-current" class="streak-value">0</strong>일</span>
+          </div>
+          <div class="streak-stat">
+            <span class="streak-label">🏅 최고 기록</span>
+            <span><strong id="streak-best" class="streak-value">0</strong>일</span>
+          </div>
+        </div>
+        <p id="streak-note" class="streak-note"></p>
+        <ul id="badge-list" class="badge-list" aria-label="배지"></ul>
       </div>
       <p class="panel-note">
         오늘 할 일을 3개 이상 모두 끝내면(올클리어) 펫이 하루에 한 번 자라요.
