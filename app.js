@@ -2,38 +2,56 @@
 
 /* ===== 설정 ===== */
 const CONFIG = Object.freeze({
-  POINTS_PER_TODO: 10,
-  ALL_CLEAR_BONUS: 50,
-  MIN_TODOS_FOR_BONUS: 3,
+  MIN_TODOS_FOR_CLEAR: 3, // 올클리어로 인정하는 최소 할 일 수
+  MAX_TODOS_PER_DAY: 20, // 하루에 추가할 수 있는 최대 할 일 수
+  PET_NAME_MAX_LENGTH: 12,
 });
 
-const STORAGE_KEY = "gameTodo.v1";
-// 읽을 수 없는 저장값은 지우기 전에 여기에 한 벌 남겨 둔다 (가장 최근 것만).
+// 성장 단계. growth가 min 이상이면 그 단계. 아래에서 위로 오름차순.
+const PET_STAGES = Object.freeze([
+  { min: 0, name: "알", icon: "🥚" },
+  { min: 3, name: "아기", icon: "🐣" },
+  { min: 7, name: "어린이", icon: "🐥" },
+  { min: 14, name: "어른", icon: "🐔" },
+  { min: 30, name: "전설", icon: "🦚" },
+]);
+
+const PET_MOODS = Object.freeze({
+  happy: { label: "신남", icon: "😆", note: "오늘 올클리어했어요!" },
+  normal: { label: "보통", icon: "🙂", note: "오늘도 올클리어하면 신나요." },
+  sad: { label: "시무룩", icon: "😢", note: "올클리어를 기다리고 있어요." },
+});
+
+const STORAGE_KEY = "gameTodo.v2";
+const STATE_VERSION = 2;
+// 이전 버전(포인트·상점) 저장 키. 읽기만 하고 지우지 않는다.
+const LEGACY_KEY = "gameTodo.v1";
+// v1 → v2 변환 직전에 v1 원본 문자열을 그대로 복사해 두는 키.
+const LEGACY_BACKUP_KEY = "gameTodo.v1.backup";
+// v2 저장값을 읽을 수 없을 때 덮어쓰기 전에 원본을 남겨 두는 키 (가장 최근 것만).
 const BACKUP_KEY = "gameTodo.backup";
-const STATE_VERSION = 1;
 
 /*
- * 저장 형식 변환. 키는 "변환 전 버전", 값은 그 버전의 상태를 다음 버전으로 바꾸는 함수.
+ * 같은 키(gameTodo.v2) 안에서의 저장 형식 변환. 키는 "변환 전 버전", 값은 다음 버전으로 바꾸는 함수.
  * 상태 구조를 바꿀 때는 STATE_VERSION을 올리고 여기에 변환 함수를 추가한다. 예:
- *   1: (s) => ({ ...s, version: 2, streak: 0 }),
+ *   2: (s) => ({ ...s, version: 3, streak: 0 }),
+ * (v1 → v2는 저장 키까지 바뀌므로 migrateFromV1()이 따로 맡는다.)
  */
 const MIGRATIONS = {};
 const CATEGORIES = ["work", "personal", "study"];
 const CATEGORY_LABELS = { work: "업무", personal: "개인", study: "공부" };
 const TITLE_MAX_LENGTH = 50;
 
-// 상점 상품 (저장하지 않음). 구매 내역에는 구매 당시의 name/price를 따로 남긴다.
-const SHOP_ITEMS = Object.freeze([
-  { id: "triangle-kimbap", name: "삼각김밥", price: 200, icon: "🍙" },
-  { id: "americano", name: "아메리카노", price: 500, icon: "☕" },
-  { id: "ice-cream", name: "아이스크림", price: 800, icon: "🍦" },
-  { id: "burger-set", name: "버거 세트", price: 1500, icon: "🍔" },
-  { id: "movie-ticket", name: "영화 관람권", price: 3000, icon: "🎬" },
-]);
-
-const COUPON_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
 /*
+ * 상태 구조 (v2):
+ * {
+ *   version: 2,
+ *   todos: [todo, ...],
+ *   clearDates: ["YYYY-MM-DD", ...],   // 올클리어한 날짜 (오름차순, 중복 없음)
+ *   pet: { name: string, growth: number, createdAt: "YYYY-MM-DD" },
+ *   badges: [string, ...]              // 받은 배지 id
+ * }
+ *
  * todo 구조:
  * {
  *   id: string,
@@ -46,69 +64,73 @@ const COUPON_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
  * }
  */
 
-/* ===== 날짜 유틸 ===== */
-// 로컬 시간 기준 "YYYY-MM-DD". toISOString()은 UTC라 한국 시간 오전 9시 이전엔 전날로 밀린다.
-function getLocalDateString(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
+/* ===== 날짜 표시 ===== */
+// getLocalDateString / parseLocalDate / addDays와 연속 달성 계산은 streak.js에 있다.
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
-
-// "YYYY-MM-DD"를 로컬 자정의 Date로. new Date("YYYY-MM-DD")는 UTC로 해석되므로 쓰지 않는다.
-function parseLocalDate(dateString) {
-  const [y, m, d] = dateString.split("-").map(Number);
-  return new Date(y, m - 1, d);
-}
-
-// 월말·연말도 setDate가 알아서 넘겨준다.
-function addDays(dateString, days) {
-  const date = parseLocalDate(dateString);
-  date.setDate(date.getDate() + days);
-  return getLocalDateString(date);
-}
 
 // "2026-10-29(목)"
 function formatDateLabel(dateString) {
   return `${dateString}(${WEEKDAYS[parseLocalDate(dateString).getDay()]})`;
 }
 
-// "2026-10-29 14:05" (로컬 시간)
-function formatDateTime(timestamp) {
-  const date = new Date(timestamp);
-  const h = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  return `${getLocalDateString(date)} ${h}:${min}`;
+// "2026-10" → "2026년 10월"
+function formatMonthLabel(monthString) {
+  const [y, m] = monthString.split("-").map(Number);
+  return `${y}년 ${m}월`;
 }
 
-// 받침 유무로 "을"/"를" 선택. 한글이 아니면 "을(를)".
-function withObjectParticle(word) {
+// 받침 유무로 주격 조사 선택: "몽이" → "몽이가", "콩" → "콩이". 한글이 아니면 "이(가)".
+function withSubjectParticle(word) {
   const code = word.charCodeAt(word.length - 1) - 0xac00;
-  if (code < 0 || code > 11171) return `${word}을(를)`;
-  return word + (code % 28 === 0 ? "를" : "을");
+  if (code < 0 || code > 11171) return `${word}이(가)`;
+  return word + (code % 28 === 0 ? "가" : "이");
 }
 
-// 1500 → "1,500P"
-function formatPoints(points) {
-  return `${points.toLocaleString("ko-KR")}P`;
+// 화면 문구용 펫 이름 + 조사. 이름이 없으면 "펫이".
+function petSubject() {
+  return withSubjectParticle(state.pet.name || "펫");
+}
+
+/* ===== 저장소 접근 ===== */
+// localStorage는 차단·용량 초과 등으로 예외를 던질 수 있으므로 모든 접근을 여기서 감싼다.
+function readStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (err) {
+    console.error(`저장소에서 "${key}"를 읽을 수 없습니다.`, err);
+    return null;
+  }
+}
+
+function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err) {
+    console.error(`저장소에 "${key}"를 쓸 수 없습니다.`, err);
+    return false;
+  }
 }
 
 /* ===== 상태 ===== */
+function createPet(growth = 0) {
+  return { name: "", growth, createdAt: getLocalDateString() };
+}
+
 function createInitialState() {
   return {
     version: STATE_VERSION,
-    points: 0,
     todos: [],
-    bonusDates: [],
-    purchases: [],
+    clearDates: [],
+    pet: createPet(),
+    badges: [],
   };
 }
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const isObject = (value) => value !== null && typeof value === "object";
+const isDateString = (value) => typeof value === "string" && DATE_PATTERN.test(value);
 
 function isValidTodo(todo) {
   return isObject(todo)
@@ -118,15 +140,6 @@ function isValidTodo(todo) {
     && typeof todo.date === "string" && DATE_PATTERN.test(todo.date)
     && typeof todo.done === "boolean"
     && Number.isFinite(todo.createdAt);
-}
-
-function isValidPurchase(purchase) {
-  return isObject(purchase)
-    && typeof purchase.id === "string"
-    && typeof purchase.name === "string"
-    && Number.isFinite(purchase.price)
-    && typeof purchase.code === "string"
-    && Number.isFinite(purchase.purchasedAt);
 }
 
 // 배열이면 형식이 맞는 항목만 남긴다. 버린 항목이 있으면 problems에 적는다.
@@ -157,43 +170,100 @@ function migrateState(raw) {
   return current;
 }
 
-// 현재 버전 형태인지 확인하고, 빠지거나 잘못된 값은 기본값으로 바꾸거나 버린다.
-function normalizeState(raw, problems = []) {
-  const todos = keepValid(raw.todos, isValidTodo, "할 일", problems).map((todo) => ({
+function normalizeTodos(list, problems) {
+  return keepValid(list, isValidTodo, "할 일", problems).map((todo) => ({
     ...todo,
     completedAt: todo.done && Number.isFinite(todo.completedAt) ? todo.completedAt : null,
   }));
-  const isDate = (d) => typeof d === "string" && DATE_PATTERN.test(d);
-  const bonusDates = [...new Set(keepValid(raw.bonusDates, isDate, "보너스 날짜", problems))];
+}
+
+// 형식이 맞는 날짜만 남기고 중복 제거 + 오름차순 정렬.
+function normalizeDates(list, label, problems) {
+  return [...new Set(keepValid(list, isDateString, label, problems))].sort();
+}
+
+function normalizePet(raw, problems) {
+  if (!isObject(raw)) {
+    if (raw !== undefined) problems.push("펫 정보가 객체가 아님");
+    return createPet();
+  }
+  const growthOk = Number.isInteger(raw.growth) && raw.growth >= 0;
+  if (!growthOk) problems.push("펫 성장치가 잘못됨");
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    growth: growthOk ? raw.growth : 0,
+    createdAt: isDateString(raw.createdAt) ? raw.createdAt : getLocalDateString(),
+  };
+}
+
+// 현재 버전 형태인지 확인하고, 빠지거나 잘못된 값은 기본값으로 바꾸거나 버린다.
+function normalizeState(raw, problems = []) {
   return {
     version: STATE_VERSION,
-    points: Number.isFinite(raw.points) ? Math.max(0, raw.points) : 0,
-    todos,
-    bonusDates,
-    purchases: keepValid(raw.purchases, isValidPurchase, "구매 내역", problems),
+    todos: normalizeTodos(raw.todos, problems),
+    clearDates: normalizeDates(raw.clearDates, "올클리어 날짜", problems),
+    pet: normalizePet(raw.pet, problems),
+    badges: [...new Set(keepValid(raw.badges, (id) => typeof id === "string", "배지", problems))],
   };
 }
 
 // 다음 저장 때 덮어써지기 전에 원본 문자열을 백업 키에 남긴다.
 function backupRawState(json, reason) {
   console.warn(`저장 데이터 문제(${reason}). 원본을 localStorage "${BACKUP_KEY}"에 백업합니다.`);
-  try {
-    localStorage.setItem(BACKUP_KEY, JSON.stringify({ backedUpAt: Date.now(), reason, data: json }));
-  } catch (err) {
-    console.error("백업에 실패했습니다.", err);
+  writeStorage(BACKUP_KEY, JSON.stringify({ backedUpAt: Date.now(), reason, data: json }));
+}
+
+/*
+ * v1 상태 → v2 상태.
+ * - todos는 그대로 (형식이 잘못된 항목만 버림)
+ * - bonusDates → clearDates, 펫 성장치는 올클리어한 날 수로 시작
+ * - points, purchases는 옮기지 않는다 (v1 원본은 백업 키와 v1 키에 남아 있음)
+ */
+function convertV1ToV2(v1) {
+  const problems = [];
+  const clearDates = normalizeDates(v1.bonusDates, "보너스 날짜", problems);
+  const converted = {
+    version: STATE_VERSION,
+    todos: normalizeTodos(v1.todos, problems),
+    clearDates,
+    pet: createPet(clearDates.length),
+    badges: [],
+  };
+  return { converted, problems };
+}
+
+// v2가 없고 v1이 있을 때 한 번 실행된다. 결과는 바로 v2 키에 저장해서 다음부터는 v2를 읽는다.
+// v1이 깨졌거나 v1 형식이 아니면 빈 v2로 시작한다. 어느 경우든 v1 키는 지우지 않는다.
+function migrateFromV1(legacyJson) {
+  if (!writeStorage(LEGACY_BACKUP_KEY, legacyJson)) {
+    console.warn(`v1 원본을 "${LEGACY_BACKUP_KEY}"에 복사하지 못했습니다. 원본은 "${LEGACY_KEY}"에 그대로 있습니다.`);
   }
+
+  let next;
+  try {
+    const v1 = JSON.parse(legacyJson);
+    if (!isObject(v1) || v1.version !== 1) {
+      throw new Error(`v1 형식이 아님 (version: ${isObject(v1) ? v1.version : typeof v1})`);
+    }
+    const { converted, problems } = convertV1ToV2(v1);
+    if (problems.length > 0) {
+      console.warn(`v1 → v2 변환 중 건너뛴 항목: ${problems.join(", ")}`);
+    }
+    next = converted;
+  } catch (err) {
+    console.warn("v1 데이터를 변환할 수 없어 빈 상태로 시작합니다.", err);
+    next = createInitialState();
+  }
+
+  writeStorage(STORAGE_KEY, JSON.stringify(next));
+  return next;
 }
 
 function loadState() {
-  let json;
-  try {
-    json = localStorage.getItem(STORAGE_KEY);
-  } catch (err) {
-    console.error("저장소를 읽을 수 없어 초기 상태로 시작합니다.", err);
-    return createInitialState();
-  }
+  const json = readStorage(STORAGE_KEY);
   if (json === null) {
-    return createInitialState();
+    const legacyJson = readStorage(LEGACY_KEY);
+    return legacyJson === null ? createInitialState() : migrateFromV1(legacyJson);
   }
 
   let raw;
@@ -223,13 +293,7 @@ function loadState() {
 }
 
 function saveState() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return true;
-  } catch (err) {
-    console.error("상태를 저장하지 못했습니다.", err);
-    return false;
-  }
+  return writeStorage(STORAGE_KEY, JSON.stringify(state));
 }
 
 let state = loadState();
@@ -239,6 +303,8 @@ let selectedDate = getLocalDateString();
 let categoryFilter = "all";
 // 수정 중인 할 일 id (저장하지 않음). 한 번에 하나만 수정한다.
 let editingId = null;
+// 달력에서 보고 있는 달 "YYYY-MM" (저장하지 않음).
+let calendarMonth = getLocalDateString().slice(0, 7);
 
 /* ===== 할 일 ===== */
 function generateId() {
@@ -271,61 +337,90 @@ function normalizeCategory(category) {
   return CATEGORIES.includes(category) ? category : "work";
 }
 
-/* ===== 포인트 ===== */
-// 포인트 대상 할 일이 3개 이상이고, 그날 할 일(기록용 포함)이 모두 완료.
+/* ===== 올클리어 · 펫 성장 ===== */
+// 그날 할 일이 3개 이상이고 모두 완료.
 function isAllClear(date) {
-  const { rewardable, remaining } = getProgress(date);
-  return rewardable >= CONFIG.MIN_TODOS_FOR_BONUS && remaining === 0;
+  const { total, remaining } = getProgress(date);
+  return total >= CONFIG.MIN_TODOS_FOR_CLEAR && remaining === 0;
+}
+
+function getPetStage(growth) {
+  let index = 0;
+  PET_STAGES.forEach((stage, i) => {
+    if (growth >= stage.min) index = i;
+  });
+  return { ...PET_STAGES[index], index, next: PET_STAGES[index + 1] ?? null };
 }
 
 /*
- * 모든 포인트 변경은 이 함수에서만 한다. 할 일 상태를 바꾼 "뒤에" 호출한다.
- * - doneDelta: 이번 변경으로 늘어난(+1) / 줄어든(-1) 포인트 대상 완료 항목 수 → ±POINTS_PER_TODO
- * - 그날의 올클리어 여부를 다시 확인해서, 새로 달성하면 보너스 지급 + bonusDates에 추가,
- *   깨졌으면 보너스 회수 + bonusDates에서 제거. bonusDates가 중복 지급을 막는다.
- * - 포인트는 0 밑으로 내려가지 않는다. 회수할 포인트가 모자라면 포인트는 건드리지 않고
- *   shortage(모자란 양)를 돌려준다. 호출한 쪽이 tryChange()로 변경 전체를 되돌린다.
- * 반환값: { date, doneDelta, bonusChange: 1 | -1 | 0, shortage }
+ * 할 일 상태를 바꾼 "뒤에" 호출한다. 펫 성장은 이 함수에서만 바뀐다.
+ * - 오늘 날짜만 반영: 올클리어를 새로 달성하면 clearDates에 오늘 추가 + growth +1,
+ *   깨지면 오늘을 빼고 growth -1. clearDates가 하루 한 번만 오르게 막는다.
+ * - 지난 날짜·미래 날짜는 clearDates와 growth를 건드리지 않는다.
+ *   (지난 날짜를 나중에 몰아서 체크해 성장시키는 것을 막기 위해)
+ * - 올클리어가 새로 추가되면 연속 기록을 다시 계산해 배지를 준다(syncBadges).
+ * 반환값: { date, growthChange: 1 | -1 | 0, stageUp, newBadges }
  */
-function settlePoints(date, doneDelta) {
-  let delta = doneDelta * CONFIG.POINTS_PER_TODO;
-  let bonusChange = 0;
+function updateGrowth(date) {
+  const result = { date, growthChange: 0, stageUp: false, newBadges: [] };
+  if (date !== getLocalDateString()) return result;
 
   const allClear = isAllClear(date);
-  const hasBonus = state.bonusDates.includes(date);
-  if (allClear && !hasBonus) {
-    delta += CONFIG.ALL_CLEAR_BONUS;
-    state.bonusDates.push(date);
-    bonusChange = 1;
-  } else if (!allClear && hasBonus) {
-    delta -= CONFIG.ALL_CLEAR_BONUS;
-    state.bonusDates = state.bonusDates.filter((d) => d !== date);
-    bonusChange = -1;
-  }
+  const recorded = state.clearDates.includes(date);
+  const before = getPetStage(state.pet.growth);
 
-  const next = state.points + delta;
-  if (next < 0) {
-    return { date, doneDelta, bonusChange, shortage: -next };
+  if (allClear && !recorded) {
+    state.clearDates = [...state.clearDates, date].sort();
+    state.pet.growth += 1;
+    result.growthChange = 1;
+    result.newBadges = syncBadges();
+  } else if (!allClear && recorded) {
+    state.clearDates = state.clearDates.filter((d) => d !== date);
+    state.pet.growth = Math.max(0, state.pet.growth - 1);
+    result.growthChange = -1;
   }
-  state.points = next;
-  return { date, doneDelta, bonusChange, shortage: 0 };
-}
-
-// 변경을 적용해 보고, 포인트가 모자라 회수할 수 없으면 state를 통째로 되돌린다.
-// 회수를 건너뛰고 진행하면 "해제 → 다시 완료"로 포인트를 계속 얻을 수 있기 때문.
-function tryChange(change) {
-  const snapshot = structuredClone(state);
-  const result = change();
-  if (result?.shortage > 0) {
-    state = snapshot;
-  }
+  result.stageUp = getPetStage(state.pet.growth).index > before.index;
   return result;
 }
 
-/* 아래 변경 함수들은 state(포인트 포함)만 바꾼다. 저장과 다시 그리기는 commit()이 맡는다.
- * 실패하면 null, 성공하면 settlePoints()의 결과를 돌려준다. */
+// 최고 연속 기록으로 받을 배지를 state.badges에 더한다. 한 번 받은 배지는 빼지 않는다.
+// 반환값: 새로 받은 배지 목록
+function syncBadges() {
+  const { badges, newlyEarned } = mergeBadges(state.badges, getBestStreak(state.clearDates));
+  state.badges = badges;
+  return newlyEarned;
+}
+
+// 오늘 올클리어 → 신남, 어제 올클리어 → 보통, 2일 이상 못 함 → 시무룩.
+// 막 만든 펫(만든 날·다음 날)은 아직 기회가 없었으므로 보통.
+function getPetMood() {
+  const today = getLocalDateString();
+  const yesterday = addDays(today, -1);
+  if (state.clearDates.includes(today)) return PET_MOODS.happy;
+  if (state.clearDates.includes(yesterday) || state.pet.createdAt >= yesterday) return PET_MOODS.normal;
+  return PET_MOODS.sad;
+}
+
+// 앞뒤 공백 제거 후 1~12자.
+function validatePetName(rawName) {
+  const name = rawName.trim();
+  const length = Array.from(name).length;
+  if (length === 0) return { ok: false, name, error: "이름을 입력해 주세요." };
+  if (length > CONFIG.PET_NAME_MAX_LENGTH) {
+    return { ok: false, name, error: `이름은 ${CONFIG.PET_NAME_MAX_LENGTH}자 이하로 입력해 주세요.` };
+  }
+  return { ok: true, name, error: "" };
+}
+
+/* 아래 변경 함수들은 state만 바꾼다. 저장과 다시 그리기는 commit()이 맡는다.
+ * 실패하면 null, 성공하면 updateGrowth()의 결과를 돌려준다. */
+
+function isDayFull(date) {
+  return getTodosForDate(date).length >= CONFIG.MAX_TODOS_PER_DAY;
+}
 
 function addTodo(title, category) {
+  if (isDayFull(selectedDate)) return null;
   state.todos.push({
     id: generateId(),
     title,
@@ -335,7 +430,7 @@ function addTodo(title, category) {
     createdAt: Date.now(),
     completedAt: null,
   });
-  return settlePoints(selectedDate, 0); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
+  return updateGrowth(selectedDate); // 미완료 항목이 늘어 올클리어가 깨질 수 있다
 }
 
 function setTodoDone(id, done) {
@@ -343,9 +438,13 @@ function setTodoDone(id, done) {
   if (!todo || isFutureTodo(todo) || todo.done === done) return null;
   todo.done = done;
   todo.completedAt = done ? Date.now() : null;
-  const rewardable = isRewardable(todo);
-  const settled = settlePoints(todo.date, rewardable ? (done ? 1 : -1) : 0);
-  return { ...settled, recordOnly: done && !rewardable };
+  // 지난 날짜를 올클리어한 경우 "성장 없음"을 알려 주기 위한 표시
+  const pastClear = done && todo.date < getLocalDateString() && isAllClear(todo.date);
+  return { ...updateGrowth(todo.date), pastClear };
+}
+
+function renamePet(name) {
+  state.pet.name = name;
 }
 
 function updateTodo(id, title, category) {
@@ -360,51 +459,8 @@ function deleteTodo(id) {
   const index = state.todos.findIndex((todo) => todo.id === id);
   if (index === -1) return null;
   const [removed] = state.todos.splice(index, 1);
-  // 완료 항목이면 받은 포인트 회수. 미완료든 완료든 올클리어 여부가 바뀔 수 있다.
-  return settlePoints(removed.date, removed.done && isRewardable(removed) ? -1 : 0);
-}
-
-/* ===== 상점 ===== */
-function findShopItem(itemId) {
-  return SHOP_ITEMS.find((item) => item.id === itemId);
-}
-
-function randomChars(length) {
-  // 36의 배수(252) 이상인 값은 버려서 글자마다 확률이 같게 한다.
-  let result = "";
-  const buf = new Uint8Array(1);
-  while (result.length < length) {
-    crypto.getRandomValues(buf);
-    if (buf[0] < 252) result += COUPON_CHARS[buf[0] % COUPON_CHARS.length];
-  }
-  return result;
-}
-
-// "GIFT-XXXX-XXXX". 기존 구매 내역과 겹치면 다시 만든다.
-function generateCouponCode() {
-  let code;
-  do {
-    code = `GIFT-${randomChars(4)}-${randomChars(4)}`;
-  } while (state.purchases.some((p) => p.code === code));
-  return code;
-}
-
-// 포인트가 충분하면 차감하고 구매 기록을 남긴다. 실패하면 null.
-function purchaseItem(itemId) {
-  const item = findShopItem(itemId);
-  if (!item || state.points < item.price) return null;
-
-  state.points -= item.price;
-  const purchase = {
-    id: generateId(),
-    itemId: item.id,
-    name: item.name,
-    price: item.price,
-    code: generateCouponCode(),
-    purchasedAt: Date.now(),
-  };
-  state.purchases.push(purchase);
-  return purchase;
+  // 미완료든 완료든 지우면 올클리어 여부가 바뀔 수 있다.
+  return updateGrowth(removed.date);
 }
 
 function commit() {
@@ -425,12 +481,6 @@ function getVisibleTodos() {
     .sort((a, b) => Number(a.done) - Number(b.done) || a.createdAt - b.createdAt);
 }
 
-// 그 날짜가 지난 뒤에 만든 할 일은 기록용이라 포인트·보너스 대상이 아니다.
-// (그날 또는 미리 만들어 둔 할 일은 나중에 완료해도 포인트를 받는다.)
-function isRewardable(todo) {
-  return getLocalDateString(new Date(todo.createdAt)) <= todo.date;
-}
-
 // 진행률은 필터와 상관없이 그날 전체 기준.
 function getProgress(date) {
   const todos = getTodosForDate(date);
@@ -440,24 +490,8 @@ function getProgress(date) {
     total,
     done,
     remaining: total - done,
-    rewardable: todos.filter(isRewardable).length,
     percent: total === 0 ? 0 : Math.round((done / total) * 100),
   };
-}
-
-/* ===== 렌더링 ===== */
-let renderedPoints = null; // 직전에 그린 포인트. 처음 그릴 때는 애니메이션 없음.
-
-function renderPoints() {
-  const el = document.getElementById("points-value");
-  el.textContent = state.points.toLocaleString("ko-KR");
-
-  if (renderedPoints !== null && renderedPoints !== state.points) {
-    el.classList.remove("is-up", "is-down");
-    void el.offsetWidth; // 클래스를 다시 붙여도 애니메이션이 처음부터 재생되게
-    el.classList.add(state.points > renderedPoints ? "is-up" : "is-down");
-  }
-  renderedPoints = state.points;
 }
 
 /* ===== 게임 효과 ===== */
@@ -519,22 +553,38 @@ function getClearDateText(date) {
   return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
-// settlePoints() 결과를 토스트·배너로 보여준다.
-function showPointFeedback(result) {
-  if (!result) return;
-  const { date, doneDelta, bonusChange, recordOnly } = result;
+// 진화 축하 팝업: 이전 단계 → 새 단계
+function showEvolveDialog(from, to) {
+  document.getElementById("evolve-from").textContent = from.icon;
+  document.getElementById("evolve-to").textContent = to.icon;
+  document.getElementById("evolve-title").textContent = `${to.name} 단계로 진화했어요!`;
+  document.getElementById("evolve-note").textContent = `${petSubject()} ${from.name} 단계에서 ${to.name} 단계로 자랐어요. 계속 올클리어해 주세요!`;
+  const dialog = document.getElementById("evolve-dialog");
+  if (!dialog.open) dialog.showModal();
+}
 
-  if (recordOnly) {
-    showToast("기록용 할 일이라 포인트는 없어요", "info");
+/*
+ * updateGrowth() 결과를 화면 효과로 보여준다.
+ * - 오늘 올클리어 → "[펫이름]이 자랐어요!" 배너
+ * - 단계가 오르면 → 진화 축하 팝업
+ * - 배지를 받으면 → 토스트
+ */
+function showGrowthFeedback(result) {
+  if (!result) return;
+  const { growthChange, stageUp, pastClear, newBadges = [] } = result;
+
+  if (pastClear) {
+    showToast("지난 날짜는 올클리어해도 펫이 자라지 않아요", "info", 2500);
   }
-  if (doneDelta !== 0) {
-    const amount = Math.abs(doneDelta) * CONFIG.POINTS_PER_TODO;
-    showToast(doneDelta > 0 ? `+${amount}P` : `-${amount}P`, doneDelta > 0 ? "gain" : "loss");
-  }
-  if (bonusChange > 0) {
-    showBanner(`${getClearDateText(date)} 올클리어! +${CONFIG.ALL_CLEAR_BONUS}P`);
-  } else if (bonusChange < 0) {
-    showToast(`올클리어 보너스 -${CONFIG.ALL_CLEAR_BONUS}P`, "loss");
+  if (growthChange > 0) {
+    showBanner(`${petSubject()} 자랐어요!`);
+    if (stageUp) {
+      const to = getPetStage(state.pet.growth);
+      showEvolveDialog(PET_STAGES[to.index - 1], to);
+    }
+    newBadges.forEach((badge) => showToast(`${badge.icon} 배지 획득: ${badge.name}`, "gain", 3000));
+  } else if (growthChange < 0) {
+    showToast("오늘 올클리어가 풀려서 성장 -1", "loss");
   }
 }
 
@@ -576,15 +626,7 @@ function createTodoItem(todo) {
     createButton("삭제", "delete", "btn-danger"),
   );
 
-  li.append(checkWrap, title, badge);
-  if (!isRewardable(todo)) {
-    const recordTag = document.createElement("span");
-    recordTag.className = "badge badge-record";
-    recordTag.textContent = "기록용";
-    recordTag.title = "날짜가 지난 뒤에 만든 할 일이라 포인트가 없어요";
-    li.append(recordTag);
-  }
-  li.append(actions);
+  li.append(checkWrap, title, badge, actions);
   return li;
 }
 
@@ -645,7 +687,23 @@ function renderDateBar() {
   const today = getLocalDateString();
   document.getElementById("date-label").textContent = formatDateLabel(selectedDate);
   document.getElementById("date-today").disabled = selectedDate === today;
-  document.getElementById("date-note").hidden = selectedDate >= today;
+}
+
+// 진행 막대 아래 펫 성장 안내.
+function getGrowthHint() {
+  const today = getLocalDateString();
+  const { total } = getProgress(selectedDate);
+  if (selectedDate < today) return "지난 날짜는 올클리어해도 펫이 자라지 않아요";
+  if (selectedDate > today) return "미래 날짜는 그날이 되면 체크할 수 있어요";
+  if (state.clearDates.includes(today)) return `오늘 ${petSubject()} 자랐어요 🎉`;
+  if (total < CONFIG.MIN_TODOS_FOR_CLEAR) return `할 일이 ${CONFIG.MIN_TODOS_FOR_CLEAR}개 이상 있어야 성장해요`;
+  return `올클리어하면 ${petSubject()} 자라요`;
+}
+
+function renderGrowthHint() {
+  const hint = document.getElementById("growth-hint");
+  hint.textContent = getGrowthHint();
+  hint.classList.toggle("is-muted", selectedDate !== getLocalDateString());
 }
 
 function renderFilter() {
@@ -656,12 +714,10 @@ function renderFilter() {
   });
 }
 
-function getRemainingText({ total, remaining, rewardable }, date) {
+function getRemainingText({ total, remaining }) {
   if (total === 0) return "할 일이 없어요";
-  if (rewardable < CONFIG.MIN_TODOS_FOR_BONUS) {
-    // 지난 날짜에 새로 추가하는 할 일은 기록용이라 더 추가해도 보너스 조건을 채울 수 없다.
-    if (date < getLocalDateString()) return "올클리어 보너스 대상이 아닌 날이에요";
-    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_BONUS}개부터 (${CONFIG.MIN_TODOS_FOR_BONUS - rewardable}개 더 추가)`;
+  if (total < CONFIG.MIN_TODOS_FOR_CLEAR) {
+    return `올클리어는 할 일 ${CONFIG.MIN_TODOS_FOR_CLEAR}개부터 (${CONFIG.MIN_TODOS_FOR_CLEAR - total}개 더 추가)`;
   }
   if (remaining === 0) return "올클리어! 🎉";
   return `올클리어까지 ${remaining}개 남음`;
@@ -675,7 +731,7 @@ function renderProgress() {
     `${progress.done} / ${progress.total} 완료 (${progress.percent}%)`;
 
   const remaining = document.getElementById("progress-remaining");
-  remaining.textContent = getRemainingText(progress, selectedDate);
+  remaining.textContent = getRemainingText(progress);
   remaining.classList.toggle("is-clear", isClear);
 
   const fill = document.getElementById("progress-fill");
@@ -695,6 +751,7 @@ function getEmptyText() {
 function renderTodos() {
   renderDateBar();
   renderProgress();
+  renderGrowthHint();
   renderFilter();
 
   const list = document.getElementById("todo-list");
@@ -719,91 +776,152 @@ function renderTodos() {
   }
 }
 
-function createShopCard(item) {
-  const card = document.createElement("div");
-  card.className = "shop-card";
+function renderPet() {
+  const { pet } = state;
+  const stage = getPetStage(pet.growth);
+  const mood = getPetMood();
+  const name = pet.name || "이름 없는 펫";
 
-  const icon = document.createElement("span");
-  icon.className = "shop-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = item.icon;
+  // 헤더 요약: 펫 이모지 + 현재 연속
+  const streak = getCurrentStreak(state.clearDates, getLocalDateString());
+  document.getElementById("header-pet-icon").textContent = stage.icon;
+  document.getElementById("header-streak").textContent = `🔥 ${streak}일 연속`;
+  document.getElementById("header-pet").title = `${name} · ${stage.name} · ${mood.label}`;
 
-  const name = document.createElement("span");
-  name.className = "shop-name";
-  name.textContent = item.name;
+  // 펫 탭
+  document.getElementById("pet-icon").textContent = stage.icon;
+  document.getElementById("pet-name").textContent = name;
+  document.getElementById("pet-stage").textContent = `${stage.name} 단계 · 성장 ${pet.growth}`;
+  document.getElementById("pet-mood").textContent = `${mood.icon} ${mood.label} · ${mood.note}`;
 
-  const price = document.createElement("span");
-  price.className = "shop-price";
-  price.textContent = formatPoints(item.price);
-
-  const lack = item.price - state.points;
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn btn-primary";
-  btn.textContent = "구매";
-  btn.dataset.itemId = item.id;
-  btn.disabled = lack > 0;
-
-  const lackText = document.createElement("p");
-  lackText.className = "shop-lack";
-  lackText.textContent = lack > 0 ? `${formatPoints(lack)} 부족` : "";
-
-  card.append(icon, name, price, btn, lackText);
-  return card;
+  // 다음 단계까지 진행률 (현재 단계 시작점부터)
+  const fill = document.getElementById("pet-progress-fill");
+  const next = document.getElementById("pet-next");
+  let percent = 100;
+  if (stage.next) {
+    percent = Math.round(((pet.growth - stage.min) / (stage.next.min - stage.min)) * 100);
+    next.textContent = `${stage.next.icon} ${stage.next.name}까지 올클리어 ${stage.next.min - pet.growth}일 남았어요`;
+  } else {
+    next.textContent = "최고 단계예요!";
+  }
+  fill.style.width = `${percent}%`;
+  document.getElementById("pet-progress").setAttribute("aria-valuenow", String(percent));
 }
 
-function renderShop() {
-  document.getElementById("shop-grid").replaceChildren(...SHOP_ITEMS.map(createShopCard));
+function getStreakNote(current, today) {
+  if (state.clearDates.includes(today)) return `오늘까지 ${current}일 연속 올클리어!`;
+  if (current > 0) return `오늘도 올클리어하면 ${current + 1}일 연속이에요.`;
+  return "오늘 올클리어하면 연속 기록이 시작돼요.";
 }
 
-function createHistoryItem(purchase) {
+function createBadgeItem(badge) {
+  const owned = state.badges.includes(badge.id);
   const li = document.createElement("li");
-  li.className = "history-item";
+  li.className = "badge-card";
+  li.classList.toggle("is-locked", !owned);
 
   const icon = document.createElement("span");
-  icon.className = "history-icon";
+  icon.className = "badge-card-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = findShopItem(purchase.itemId)?.icon ?? "🎁";
+  icon.textContent = owned ? badge.icon : "🔒";
 
-  const name = document.createElement("span");
-  name.className = "history-name";
-  name.textContent = purchase.name;
+  const name = document.createElement("strong");
+  name.className = "badge-card-name";
+  name.textContent = badge.name;
 
-  const price = document.createElement("span");
-  price.className = "history-price";
-  price.textContent = `-${formatPoints(purchase.price)}`;
+  const condition = document.createElement("span");
+  condition.className = "badge-card-condition";
+  condition.textContent = owned ? "획득" : `연속 ${badge.days}일`;
 
-  const date = document.createElement("span");
-  date.className = "history-date";
-  date.textContent = formatDateTime(purchase.purchasedAt);
-
-  const code = document.createElement("span");
-  code.className = "history-code";
-  code.textContent = purchase.code;
-
-  li.append(icon, name, price, date, code);
+  li.append(icon, name, condition);
   return li;
 }
 
-function renderHistory() {
-  // 뒤집은 뒤 안정 정렬 → 같은 시각(ms)에 산 것도 나중에 산 것이 위로.
-  const purchases = [...state.purchases].reverse().sort((a, b) => b.purchasedAt - a.purchasedAt);
-  document.getElementById("history-list").replaceChildren(...purchases.map(createHistoryItem));
-  document.getElementById("history-empty").hidden = purchases.length > 0;
+function renderBadges() {
+  const owned = STREAK_BADGES.filter((badge) => state.badges.includes(badge.id)).length;
+  document.getElementById("badge-count").textContent = `${owned} / ${STREAK_BADGES.length}`;
+  document.getElementById("badge-list").replaceChildren(...STREAK_BADGES.map(createBadgeItem));
 }
 
-function showCouponDialog(purchase) {
-  document.getElementById("coupon-icon").textContent = findShopItem(purchase.itemId)?.icon ?? "🎁";
-  document.getElementById("coupon-item").textContent = `${purchase.name} · ${formatPoints(purchase.price)} 사용`;
-  document.getElementById("coupon-code").textContent = purchase.code;
-  document.getElementById("coupon-dialog").showModal();
+/* ===== 달력 ===== */
+function createCalendarCell(date, today, cleared) {
+  if (date === null) {
+    const blank = document.createElement("span");
+    blank.className = "cal-cell is-blank";
+    blank.setAttribute("aria-hidden", "true");
+    return blank;
+  }
+  const weekday = parseLocalDate(date).getDay();
+  const isCleared = cleared.has(date);
+
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className = "cal-cell";
+  cell.dataset.date = date;
+  cell.classList.toggle("is-today", date === today);
+  cell.classList.toggle("is-cleared", isCleared);
+  cell.classList.toggle("is-future", date > today);
+  cell.classList.toggle("is-sun", weekday === 0);
+  cell.classList.toggle("is-sat", weekday === 6);
+  cell.setAttribute("aria-label", `${formatDateLabel(date)}${isCleared ? " 올클리어" : ""}${date === today ? " (오늘)" : ""}`);
+
+  const day = document.createElement("span");
+  day.className = "cal-day";
+  day.textContent = String(Number(date.slice(8)));
+
+  const stamp = document.createElement("span");
+  stamp.className = "cal-stamp";
+  stamp.setAttribute("aria-hidden", "true");
+  stamp.textContent = isCleared ? "✅" : "";
+
+  cell.append(day, stamp);
+  return cell;
 }
 
+function renderCalendar() {
+  const today = getLocalDateString();
+  const thisMonth = today.slice(0, 7);
+  const cleared = new Set(state.clearDates);
+
+  document.getElementById("cal-label").textContent = formatMonthLabel(calendarMonth);
+  document.getElementById("cal-next").disabled = calendarMonth >= thisMonth; // 미래 달은 볼 것이 없다
+  document.getElementById("calendar-grid").replaceChildren(
+    ...getCalendarCells(calendarMonth).map((date) => createCalendarCell(date, today, cleared)),
+  );
+
+  const monthCount = state.clearDates.filter((date) => date.startsWith(`${calendarMonth}-`)).length;
+  document.getElementById("cal-summary").textContent = `${Number(calendarMonth.slice(5))}월 올클리어 ${monthCount}일`;
+
+  const current = getCurrentStreak(state.clearDates, today);
+  document.getElementById("streak-current").textContent = String(current);
+  document.getElementById("streak-best").textContent = String(getBestStreak(state.clearDates));
+  document.getElementById("streak-note").textContent = getStreakNote(current, today);
+}
+
+function initCalendar() {
+  document.getElementById("cal-prev").addEventListener("click", () => {
+    calendarMonth = addMonths(calendarMonth, -1);
+    renderCalendar();
+  });
+  document.getElementById("cal-next").addEventListener("click", () => {
+    calendarMonth = addMonths(calendarMonth, 1);
+    renderCalendar();
+  });
+  // 날짜를 누르면 그날의 할 일로 이동
+  document.getElementById("calendar-grid").addEventListener("click", (e) => {
+    const cell = e.target.closest(".cal-cell[data-date]");
+    if (!cell) return;
+    selectDate(cell.dataset.date);
+    switchTab("todos");
+  });
+}
+
+// 화면 전체를 다시 그린다.
 function render() {
-  renderPoints();
   renderTodos();
-  renderShop();
-  renderHistory();
+  renderPet();
+  renderBadges();
+  renderCalendar();
 }
 
 function showTodoError(message) {
@@ -827,8 +945,12 @@ function initTodoForm() {
       return;
     }
 
-    const settled = tryChange(() => addTodo(result.title, categorySelect.value));
-    if (finishChange(settled, (lack) => `올클리어 보너스를 돌려줄 포인트가 ${lack} 부족해서 추가할 수 없어요`)) {
+    if (isDayFull(selectedDate)) {
+      showTodoError(`하루 할 일은 최대 ${CONFIG.MAX_TODOS_PER_DAY}개까지 추가할 수 있어요.`);
+      return;
+    }
+
+    if (finishChange(addTodo(result.title, categorySelect.value))) {
       titleInput.value = "";
     }
     titleInput.focus();
@@ -837,23 +959,53 @@ function initTodoForm() {
   titleInput.addEventListener("input", () => showTodoError(""));
 }
 
-function initShop() {
-  document.getElementById("shop-grid").addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-item-id]");
-    if (!btn) return;
-    const item = findShopItem(btn.dataset.itemId);
-    if (!item) return;
-    if (!confirm(`${withObjectParticle(item.name)} ${formatPoints(item.price)}로 구매할까요?`)) return;
+/* ===== 펫 이름 ===== */
+// required: 첫 실행처럼 이름이 꼭 필요할 때는 취소·Esc로 닫을 수 없다.
+function openPetNameDialog(required) {
+  const dialog = document.getElementById("pet-name-dialog");
+  const input = document.getElementById("pet-name-input");
+  dialog.dataset.required = String(required);
+  document.getElementById("pet-name-title").textContent = required ? "펫 이름을 지어 주세요" : "펫 이름 바꾸기";
+  document.getElementById("pet-name-cancel").hidden = required;
+  document.getElementById("pet-name-error").hidden = true;
+  input.value = state.pet.name;
+  if (!dialog.open) dialog.showModal();
+  input.focus();
+  input.select();
+}
 
-    const purchase = purchaseItem(item.id);
-    if (!purchase) {
-      alert("포인트가 부족해요.");
-      render();
+function initPetName() {
+  const dialog = document.getElementById("pet-name-dialog");
+  const form = document.getElementById("pet-name-form");
+  const input = document.getElementById("pet-name-input");
+  const error = document.getElementById("pet-name-error");
+  input.maxLength = CONFIG.PET_NAME_MAX_LENGTH;
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const result = validatePetName(input.value);
+    if (!result.ok) {
+      error.textContent = result.error;
+      error.hidden = false;
+      input.focus();
       return;
     }
+    renamePet(result.name);
     commit();
-    showCouponDialog(purchase);
+    dialog.close();
   });
+
+  input.addEventListener("input", () => {
+    error.hidden = true;
+  });
+  document.getElementById("pet-name-cancel").addEventListener("click", () => dialog.close());
+  // Esc: 이름이 꼭 필요할 때는 닫히지 않게 막는다.
+  dialog.addEventListener("cancel", (e) => {
+    if (dialog.dataset.required === "true") e.preventDefault();
+  });
+
+  document.getElementById("pet-rename").addEventListener("click", () => openPetNameDialog(false));
+  document.getElementById("header-pet").addEventListener("click", () => switchTab("pet"));
 }
 
 function selectDate(date) {
@@ -877,8 +1029,11 @@ function checkDayChange() {
   if (selectedDate === lastKnownToday) {
     selectedDate = today;
   }
+  if (calendarMonth === lastKnownToday.slice(0, 7)) {
+    calendarMonth = today.slice(0, 7); // 이번 달을 보고 있었으면 달이 바뀔 때 따라간다
+  }
   lastKnownToday = today;
-  renderTodos();
+  render(); // 날짜가 바뀌면 펫 기분도 바뀐다
 }
 
 function initDayWatcher() {
@@ -909,20 +1064,14 @@ function initFilter() {
   });
 }
 
-// tryChange() 결과를 마무리한다: 성공이면 저장·다시 그리기·효과, 포인트 부족이면 안내만.
-// blockedMessage(모자란 포인트 문자열) → 안내 문구
-function finishChange(settled, blockedMessage) {
-  if (!settled) {
-    renderTodos();
-    return false;
-  }
-  if (settled.shortage > 0) {
-    showToast(blockedMessage(formatPoints(settled.shortage)), "warn", 2500);
-    renderTodos(); // 체크박스 등 화면을 원래 상태로
+// 변경 함수의 결과를 마무리한다: 성공이면 저장·다시 그리기·효과, 실패(null)면 화면만 원래대로.
+function finishChange(result) {
+  if (!result) {
+    renderTodos(); // 막힌 체크박스 등을 원래 상태로
     return false;
   }
   commit();
-  showPointFeedback(settled);
+  showGrowthFeedback(result);
   return true;
 }
 
@@ -943,8 +1092,7 @@ function initTodoList() {
 
   list.addEventListener("change", (e) => {
     if (e.target.dataset.action !== "toggle") return;
-    const settled = tryChange(() => setTodoDone(getId(e.target), e.target.checked));
-    finishChange(settled, (lack) => `포인트가 ${lack} 부족해서 완료를 해제할 수 없어요`);
+    finishChange(setTodoDone(getId(e.target), e.target.checked));
   });
 
   list.addEventListener("click", (e) => {
@@ -960,8 +1108,7 @@ function initTodoList() {
       const todo = findTodo(id);
       // confirm()은 일반 텍스트로만 표시되므로 제목을 넣어도 안전하다.
       if (todo && confirm(`"${todo.title}" 할 일을 삭제할까요?`)) {
-        const settled = tryChange(() => deleteTodo(id));
-        finishChange(settled, (lack) => `포인트가 ${lack} 부족해서 삭제할 수 없어요`);
+        finishChange(deleteTodo(id));
       }
     }
   });
@@ -1035,7 +1182,8 @@ function init() {
   initFilter();
   initTodoForm();
   initTodoList();
-  initShop();
+  initPetName();
+  initCalendar();
   initDayWatcher();
   document.getElementById("celebration").addEventListener("click", hideBanner);
 
@@ -1044,9 +1192,18 @@ function init() {
     if (e.key !== STORAGE_KEY) return;
     state = loadState();
     render();
+    // 다른 탭에서 이름을 지었으면 이 탭의 "이름 짓기" 창은 닫는다.
+    const dialog = document.getElementById("pet-name-dialog");
+    if (state.pet.name && dialog.open && dialog.dataset.required === "true") dialog.close();
   });
 
+  // v1에서 옮겨 온 기록처럼 이미 배지 조건을 채운 경우 조용히 배지를 맞춰 둔다.
+  if (syncBadges().length > 0) saveState();
+
   render();
+  if (!state.pet.name) {
+    openPetNameDialog(true); // 처음 실행(또는 v1에서 옮겨 온 직후)에는 이름부터 짓는다
+  }
 }
 
 init();
