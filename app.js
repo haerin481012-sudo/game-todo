@@ -92,8 +92,13 @@ function petSubject() {
 }
 
 /* ===== 저장소 접근 ===== */
+// 주소에 ?demo가 있으면 체험 모드: 저장된 데이터를 건드리지 않고 메모리에만 저장해 처음 화면부터 보여 준다.
+const DEMO_MODE = new URLSearchParams(location.search).has("demo");
+const demoStorage = new Map();
+
 // localStorage는 차단·용량 초과 등으로 예외를 던질 수 있으므로 모든 접근을 여기서 감싼다.
 function readStorage(key) {
+  if (DEMO_MODE) return demoStorage.has(key) ? demoStorage.get(key) : null;
   try {
     return localStorage.getItem(key);
   } catch (err) {
@@ -103,6 +108,10 @@ function readStorage(key) {
 }
 
 function writeStorage(key, value) {
+  if (DEMO_MODE) {
+    demoStorage.set(key, value);
+    return true;
+  }
   try {
     localStorage.setItem(key, value);
     return true;
@@ -1189,7 +1198,7 @@ function init() {
 
   // 다른 브라우저 탭에서 저장하면 그 내용을 다시 읽는다. 안 그러면 이 탭이 다음에 저장할 때 덮어쓴다.
   window.addEventListener("storage", (e) => {
-    if (e.key !== STORAGE_KEY) return;
+    if (DEMO_MODE || e.key !== STORAGE_KEY) return;
     state = loadState();
     render();
     // 다른 탭에서 이름을 지었으면 이 탭의 "이름 짓기" 창은 닫는다.
